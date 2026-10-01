@@ -1,0 +1,23 @@
+# Secrets / local config
+
+venv
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# JavaScript / Expo
+node_modules/
+.expo/
+dist/
+web-build/
+*.jks
+*.keystore
+
+# Build outputs
+android/
+ios/
+*.apk
+*.aab
+*.ipa
