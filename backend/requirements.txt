@@ -1,7 +1,7 @@
 fastapi>=0.115.6
-pydantic[email]>=2.11
 uvicorn==0.32.1
-sqlalchemy==2.0.36
+sqlalchemy==2.0.54
+pydantic[email]>=2.11
 reportlab==4.2.5
 pytest==8.3.4
 httpx==0.28.1
