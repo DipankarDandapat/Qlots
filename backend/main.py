@@ -489,8 +489,8 @@ def list_entries(kind: Literal["asset", "liability", "income", "expense"] | None
 
 @app.post("/api/entries", status_code=201)
 def create_entry(body: EntryIn, user: User = Depends(current_user), db: Session = Depends(db_session)):
-    if body.kind == "asset" and body.category == "fixed_deposit" and body.principal <= 0:
-        raise HTTPException(status_code=422, detail="Enter the original principal for a fixed deposit")
+    if body.kind == "asset" and body.category in ("fixed_deposit", "recurring_deposit") and body.principal <= 0:
+        raise HTTPException(status_code=422, detail="Enter the original principal for this deposit")
     row = Entry(user_id=user.id, **body.model_dump())
     db.add(row)
     db.commit()

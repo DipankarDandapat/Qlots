@@ -342,9 +342,11 @@ export default function App() {
     setModal(true);
   };
   const saveEntry = async () => {
-    if (!form.name.trim() || !form.amount) return showToast('Add a name and amount to continue.');
+    const isFDorRD = formKind === 'asset' && (form.category === 'fixed_deposit' || form.category === 'recurring_deposit');
+    if (!form.name.trim()) return showToast('Add a name to continue.');
+    if (!isFDorRD && !form.amount) return showToast('Add an amount to continue.');
     const body = { kind: formKind, category: form.category, name: form.name.trim(), institution: form.institution, amount: Number(form.amount), principal: Number(form.principal || 0), annual_rate: Number(form.annual_rate || 0), frequency: form.frequency, emi: Number(form.emi || 0), tenure_months: Number(form.tenure_months || 0), start_date: form.start_date || null, maturity_date: form.maturity_date || null, growth_rate: Number(form.growth_rate || 0), notes: form.notes || '' };
-    if (formKind === 'asset' && form.category === 'fixed_deposit' && (!body.principal || !body.start_date)) return showToast('Enter the original principal and start date for an FD.');
+    if (isFDorRD && (!body.principal || !body.start_date || !body.annual_rate)) return showToast('Enter principal, interest rate and start date.');
     setBusy(true);
     try {
       if (editEntry) {
@@ -845,7 +847,7 @@ function EntryModal({ visible, onClose, kind, form, setForm, onSave, busy, isEdi
           <Text style={styles.fieldLabel}>Category</Text>
           <View style={styles.categoryGrid}>{categories.map(c => <Pill key={c} title={labelize(c)} active={form.category === c} onPress={() => set('category', c)} />)}</View>
           <Field label="Name" value={form.name} onChangeText={v => set('name', v)} placeholder={kind === 'asset' ? 'e.g. Main savings' : kind === 'liability' ? 'e.g. Home loan' : 'e.g. Salary'} />
-          <Field label={kind === 'liability' ? 'Outstanding balance · ₹' : kind === 'income' || kind === 'expense' ? 'Amount per period · ₹' : 'Current value · ₹'} value={form.amount} onChangeText={v => set('amount', v)} keyboardType="decimal-pad" />
+          {!(isFD || isRD) && <Field label={kind === 'liability' ? 'Outstanding balance · ₹' : kind === 'income' || kind === 'expense' ? 'Amount per period · ₹' : 'Current value · ₹'} value={form.amount} onChangeText={v => set('amount', v)} keyboardType="decimal-pad" />}
           {(isFD || isRD || isLoan) ? <Field label={isFD || isRD ? 'Original principal / instalment · ₹' : 'Annual interest rate · %'} value={isFD || isRD ? form.principal : form.annual_rate} onChangeText={v => set(isFD || isRD ? 'principal' : 'annual_rate', v)} keyboardType="decimal-pad" /> : null}
           {(isFD || isRD || isLoan) ? <Field label={isFD || isRD ? 'Annual interest rate · %' : 'Monthly EMI · ₹'} value={isFD || isRD ? form.annual_rate : form.emi} onChangeText={v => set(isFD || isRD ? 'annual_rate' : 'emi', v)} keyboardType="decimal-pad" /> : null}
           {isLoan ? <Field label="Loan tenure · months (optional)" value={form.tenure_months} onChangeText={v => set('tenure_months', v)} keyboardType="number-pad" hint="Used to calculate when the loan ends in projections." /> : null}
