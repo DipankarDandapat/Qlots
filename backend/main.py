@@ -2,12 +2,16 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import logging
 import os
 import secrets
 from datetime import date, datetime, timedelta, timezone
 from io import BytesIO
 from math import ceil
 from typing import Literal
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 import jwt
 from fastapi import Depends, FastAPI, HTTPException, Query, Response, status
@@ -36,8 +40,9 @@ engine = create_engine(DATABASE_URL, connect_args=connect_args, pool_pre_ping=Tr
 if DATABASE_URL.startswith("sqlite"):
     from sqlalchemy import event
     @event.listens_for(engine, "connect")
-    def set_wal_mode(dbapi_conn, _):
-        dbapi_conn.execute("PRAGMA journal_mode=WAL")
+    def set_sqlite_pragmas(dbapi_conn, _):
+        dbapi_conn.execute("PRAGMA journal_mode=DELETE")  # avoid WAL files on ephemeral fs
+        dbapi_conn.execute("PRAGMA synchronous=NORMAL")
 SessionLocal = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)
 
 
@@ -97,6 +102,22 @@ class Snapshot(Base):
 
 
 Base.metadata.create_all(bind=engine)
+
+# ── Safe column migrations (add missing columns without dropping data) ──────
+def _add_column_if_missing(conn, table, column, definition):
+    try:
+        conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
+        logger.info(f"Migration: added {table}.{column}")
+    except Exception:
+        pass  # column already exists
+
+with engine.connect() as _conn:
+    _add_column_if_missing(_conn, 'entries', 'growth_rate', 'FLOAT DEFAULT 0')
+    _add_column_if_missing(_conn, 'entries', 'notes', 'TEXT DEFAULT ""')
+    _add_column_if_missing(_conn, 'entries', 'tenure_months', 'INTEGER DEFAULT 0')
+    _add_column_if_missing(_conn, 'entries', 'updated_at', 'DATETIME')
+    try: _conn.commit()
+    except Exception: pass
 app = FastAPI(title="Qlots API", version="0.1.0", description="Local-first personal finance MVP. Projections are estimates, not guarantees.")
 cors_setting = os.getenv("CORS_ORIGINS", "*")
 if APP_ENV == "production" and (not cors_setting.strip() or "*" in cors_setting):
@@ -437,15 +458,23 @@ def me(user: User = Depends(current_user)):
 
 @app.get("/api/dashboard")
 def dashboard(user: User = Depends(current_user), db: Session = Depends(db_session)):
-    return dashboard_data(db, user)
+    try:
+        return dashboard_data(db, user)
+    except Exception as e:
+        logger.exception(f"Dashboard error for user {user.id}: {e}")
+        raise
 
 
 @app.get("/api/entries")
 def list_entries(kind: Literal["asset", "liability", "income", "expense"] | None = Query(default=None), user: User = Depends(current_user), db: Session = Depends(db_session)):
-    stmt = select(Entry).where(Entry.user_id == user.id)
-    if kind:
-        stmt = stmt.where(Entry.kind == kind)
-    return [entry_dict(x) for x in db.scalars(stmt.order_by(Entry.created_at.desc()))]
+    try:
+        stmt = select(Entry).where(Entry.user_id == user.id)
+        if kind:
+            stmt = stmt.where(Entry.kind == kind)
+        return [entry_dict(x) for x in db.scalars(stmt.order_by(Entry.created_at.desc()))]
+    except Exception as e:
+        logger.exception(f"Entries error for user {user.id}: {e}")
+        raise
 
 
 @app.post("/api/entries", status_code=201)
