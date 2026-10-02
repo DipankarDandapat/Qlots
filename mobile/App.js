@@ -313,12 +313,14 @@ export default function App() {
     try {
       const result = await request(authMode === 'register' ? '/api/auth/register' : '/api/auth/login', { method: 'POST', body: authMode === 'register' ? auth : { email: auth.email, password: auth.password } });
       await SecureStore.setItemAsync('qlots-token', result.access_token);
+      // Clear all previous user data before loading new user's data
+      setDashboard(null); setEntries([]); setHistory([]); setForecast(null);
       setToken(result.access_token); setUser(result.user);
       try { await refresh(result.access_token); } catch (_) {}
     } catch (e) { showToast(e.message); }
     finally { setBusy(false); }
   };
-  const signOut = async () => { await SecureStore.deleteItemAsync('qlots-token'); setToken(null); setUser(null); setDashboard(null); setEntries([]); setHistory([]); };
+  const signOut = async () => { await SecureStore.deleteItemAsync('qlots-token'); setToken(null); setUser(null); setDashboard(null); setEntries([]); setHistory([]); setForecast(null); setAnswer(''); setAuth({ name: '', email: '', password: '' }); setAuthMode('login'); };
   const openForm = kind => {
     setEditEntry(null);
     setFormKind(kind);
@@ -411,6 +413,7 @@ export default function App() {
   const confirmDeleteAccount = () => {
     showToast('Tap “Delete everything” in profile to confirm.', 'info');
   };
+  const [deleteConfirmVisible, setDeleteConfirmVisible] = useState(false);
   const doDeleteAccount = async () => {
     try { await request('/api/account', { method: 'DELETE', token }); await signOut(); }
     catch (e) { showToast(e.message); }
@@ -658,7 +661,21 @@ export default function App() {
     </ScrollView>
     <View style={styles.tabbar}>{[['home', 'Overview', '◈'], ['records', 'Wealth', '▤'], ['cashflow', 'Cash flow', '↗'], ['history', 'History', '◷'], ['plan', 'Plan', '◎']].map(([key, label, glyph]) => <Pressable key={key} onPress={() => setPage(key)} style={styles.tabItem}><Text style={[styles.tabIcon, page === key && styles.tabIconActive]}>{glyph}</Text><Text style={[styles.tabLabel, page === key && styles.tabLabelActive]}>{label}</Text></Pressable>)}</View>
     <EntryModal visible={modal} onClose={() => setModal(false)} kind={formKind} form={form} setForm={setForm} onSave={saveEntry} busy={busy} isEdit={!!editEntry} />
-    <ProfileModal visible={profileModal} onClose={() => setProfileModal(false)} profile={profile} setProfile={setProfile} onSave={saveProfile} onDeleteAccount={doDeleteAccount} onSignOut={signOut} busy={busy} user={user} />
+    <ProfileModal visible={profileModal} onClose={() => setProfileModal(false)} profile={profile} setProfile={setProfile} onSave={saveProfile} onDeleteAccount={() => setDeleteConfirmVisible(true)} onSignOut={signOut} busy={busy} user={user} />
+    <Modal visible={deleteConfirmVisible} transparent animationType="fade" onRequestClose={() => setDeleteConfirmVisible(false)}>
+      <Pressable style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'center', padding: 24 }} onPress={() => setDeleteConfirmVisible(false)}>
+        <Pressable style={{ backgroundColor: C.card, borderRadius: 20, padding: 24 }} onPress={() => {}}>
+          <Text style={{ color: C.ink, fontWeight: '800', fontSize: 18, marginBottom: 10 }}>Delete account?</Text>
+          <Text style={{ color: C.muted, fontSize: 14, lineHeight: 21, marginBottom: 24 }}>This will permanently delete your account and all your financial data. This cannot be undone.</Text>
+          <Pressable onPress={doDeleteAccount} style={{ backgroundColor: C.red, borderRadius: 12, padding: 14, alignItems: 'center', marginBottom: 10 }}>
+            <Text style={{ color: '#FFF', fontWeight: '700', fontSize: 14 }}>Yes, delete everything</Text>
+          </Pressable>
+          <Pressable onPress={() => setDeleteConfirmVisible(false)} style={{ backgroundColor: C.mint, borderRadius: 12, padding: 14, alignItems: 'center' }}>
+            <Text style={{ color: C.green, fontWeight: '700', fontSize: 14 }}>Cancel</Text>
+          </Pressable>
+        </Pressable>
+      </Pressable>
+    </Modal>
     <Modal visible={healthInfoVisible} transparent animationType="fade" onRequestClose={() => setHealthInfoVisible(false)}>
       <Pressable style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'center', padding: 24 }} onPress={() => setHealthInfoVisible(false)}>
         <Pressable style={{ backgroundColor: C.card, borderRadius: 20, padding: 22 }} onPress={() => {}}>
@@ -702,6 +719,57 @@ export default function App() {
       </View>
     </Modal>
   </View>;
+}
+
+
+function ApiLogPanel({ onClose }) {
+  const logs = useApiLogs();
+  const [selected, setSelected] = useState(null);
+  if (!NETWORK_LOG_ENABLED) return (
+    <View style={{ flex: 1, backgroundColor: '#0D1F17', paddingTop: (StatusBar.currentHeight || 24) + 8, alignItems: 'center', justifyContent: 'center' }}>
+      <Text style={{ color: '#5A7A6A', textAlign: 'center', paddingHorizontal: 32, lineHeight: 22 }}>Network logging is disabled.{'\n\n'}Set EXPO_PUBLIC_NETWORK_LOG=true in .env and rebuild to enable.</Text>
+      <Pressable onPress={onClose} style={{ marginTop: 24, backgroundColor: '#1A3D2E', borderRadius: 10, paddingHorizontal: 20, paddingVertical: 10 }}><Text style={{ color: '#C8E8A9', fontWeight: '700' }}>Close</Text></Pressable>
+    </View>
+  );
+  return (
+    <View style={{ flex: 1, backgroundColor: '#0D1F17', paddingTop: (StatusBar.currentHeight || 24) + 8 }}>
+      <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 16, paddingBottom: 10, borderBottomWidth: 1, borderColor: '#1A3D2E' }}>
+        <Text style={{ color: '#C8E8A9', fontWeight: '800', fontSize: 16 }}>Network Log ({logs.length})</Text>
+        <Pressable onPress={onClose} style={{ padding: 8 }}><Text style={{ color: '#7ECBA1', fontSize: 22 }}>×</Text></Pressable>
+      </View>
+      {selected ? (
+        <ScrollView style={{ flex: 1 }} contentContainerStyle={{ padding: 14 }}>
+          <Pressable onPress={() => setSelected(null)} style={{ marginBottom: 12 }}><Text style={{ color: '#7ECBA1', fontSize: 12 }}>← Back to list</Text></Pressable>
+          <Text style={{ color: '#C8E8A9', fontWeight: '800', fontSize: 13 }}>{selected.method} {selected.path}</Text>
+          <Text style={{ color: '#5A7A6A', fontSize: 11, marginTop: 2 }}>{selected.time} · {selected.status} · {selected.ms}ms</Text>
+          {selected.error && <Text style={{ color: '#F4A89A', fontSize: 12, marginTop: 8, backgroundColor: '#2A1A1A', padding: 8, borderRadius: 6 }}>{selected.error}</Text>}
+          {selected.reqBody && <>
+            <Text style={{ color: '#7ECBA1', fontWeight: '700', fontSize: 11, marginTop: 14, marginBottom: 4 }}>REQUEST BODY</Text>
+            <ScrollView horizontal><Text style={{ color: '#C8E8A9', fontSize: 10, fontFamily: 'monospace', backgroundColor: '#1A3D2E', padding: 8, borderRadius: 6 }}>{JSON.stringify(JSON.parse(selected.reqBody), null, 2)}</Text></ScrollView>
+          </>}
+          {selected.resBody && <>
+            <Text style={{ color: '#7ECBA1', fontWeight: '700', fontSize: 11, marginTop: 14, marginBottom: 4 }}>RESPONSE BODY</Text>
+            <ScrollView horizontal><Text style={{ color: '#C8E8A9', fontSize: 10, fontFamily: 'monospace', backgroundColor: '#1A3D2E', padding: 8, borderRadius: 6 }}>{(() => { try { return JSON.stringify(JSON.parse(selected.resBody), null, 2); } catch { return selected.resBody; } })()}</Text></ScrollView>
+          </>}
+        </ScrollView>
+      ) : (
+        <ScrollView style={{ flex: 1 }} contentContainerStyle={{ padding: 12, gap: 6 }}>
+          {logs.length === 0 && <Text style={{ color: '#5A7A6A', textAlign: 'center', marginTop: 40 }}>No requests yet</Text>}
+          {logs.map((log, i) => (
+            <Pressable key={i} onPress={() => setSelected(log)} style={{ backgroundColor: '#1A3D2E', borderRadius: 8, padding: 10 }}>
+              <View style={{ flexDirection: 'row', justifyContent: 'space-between' }}>
+                <Text style={{ color: log.status >= 400 || log.status === 'ERR' ? '#F4A89A' : '#C8E8A9', fontWeight: '700', fontSize: 11, flex: 1 }} numberOfLines={1}>{log.method} {log.path}</Text>
+                <Text style={{ color: log.status >= 400 || log.status === 'ERR' ? '#F4A89A' : '#7ECBA1', fontSize: 11 }}>{log.status} · {log.ms}ms</Text>
+              </View>
+              <Text style={{ color: '#5A7A6A', fontSize: 10, marginTop: 2 }}>{log.time}</Text>
+              {log.error ? <Text style={{ color: '#F4A89A', fontSize: 10, marginTop: 3 }} numberOfLines={1}>{log.error}</Text> : null}
+              {(log.reqBody || log.resBody) && <Text style={{ color: '#3A6A4A', fontSize: 9, marginTop: 2 }}>Tap to see request/response body</Text>}
+            </Pressable>
+          ))}
+        </ScrollView>
+      )}
+    </View>
+  );
 }
 
 function AuthScreen({ auth, setAuth, mode, setMode, onSubmit, busy, toast }) {
