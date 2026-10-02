@@ -103,21 +103,21 @@ class Snapshot(Base):
 
 Base.metadata.create_all(bind=engine)
 
-# ── Safe column migrations (add missing columns without dropping data) ──────
-def _add_column_if_missing(conn, table, column, definition):
-    try:
-        conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
-        logger.info(f"Migration: added {table}.{column}")
-    except Exception:
-        pass  # column already exists
-
+# ── Safe column migrations ──────────────────────────────────────────────────
+from sqlalchemy import text as _text
 with engine.connect() as _conn:
-    _add_column_if_missing(_conn, 'entries', 'growth_rate', 'FLOAT DEFAULT 0')
-    _add_column_if_missing(_conn, 'entries', 'notes', 'TEXT DEFAULT ""')
-    _add_column_if_missing(_conn, 'entries', 'tenure_months', 'INTEGER DEFAULT 0')
-    _add_column_if_missing(_conn, 'entries', 'updated_at', 'DATETIME')
-    try: _conn.commit()
-    except Exception: pass
+    for _col, _def in [
+        ('growth_rate', 'FLOAT DEFAULT 0'),
+        ('notes', 'TEXT DEFAULT ""'),
+        ('tenure_months', 'INTEGER DEFAULT 0'),
+        ('updated_at', 'DATETIME'),
+    ]:
+        try:
+            _conn.execute(_text(f'ALTER TABLE entries ADD COLUMN {_col} {_def}'))
+            _conn.commit()
+            logger.info(f'Migration: added entries.{_col}')
+        except Exception:
+            pass
 app = FastAPI(title="Qlots API", version="0.1.0", description="Local-first personal finance MVP. Projections are estimates, not guarantees.")
 cors_setting = os.getenv("CORS_ORIGINS", "*")
 if APP_ENV == "production" and (not cors_setting.strip() or "*" in cors_setting):
