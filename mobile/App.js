@@ -320,7 +320,7 @@ export default function App() {
     } catch (e) { showToast(e.message); }
     finally { setBusy(false); }
   };
-  const signOut = async () => { await SecureStore.deleteItemAsync('qlots-token'); setToken(null); setUser(null); setDashboard(null); setEntries([]); setHistory([]); setForecast(null); setAnswer(''); setAuth({ name: '', email: '', password: '' }); setAuthMode('login'); };
+  const signOut = async () => { await SecureStore.deleteItemAsync('qlots-token'); setProfileModal(false); setPage('home'); setToken(null); setUser(null); setDashboard(null); setEntries([]); setHistory([]); setForecast(null); setAnswer(''); setAuth({ name: '', email: '', password: '' }); setAuthMode('login'); };
   const openForm = kind => {
     setEditEntry(null);
     setFormKind(kind);
