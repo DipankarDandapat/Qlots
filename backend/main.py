@@ -317,14 +317,21 @@ def project(assets: list[Entry], liabilities: list[Entry], income: list[Entry], 
     for target_year in range(1, years + 1):
         months = target_year * 12
         asset_total = 0.0
+        today_proj = date.today()
         for asset in assets:
+            if asset.category in ("fixed_deposit", "recurring_deposit"):
+                # Use the time-aware valuation which caps at maturity
+                try:
+                    future_date = date(today_proj.year + target_year, today_proj.month, today_proj.day)
+                except ValueError:
+                    future_date = date(today_proj.year + target_year, today_proj.month, 28)
+                asset_total += entry_value(asset, future_date)
+                continue
             current = entry_value(asset)
             if asset.category in ("property", "real_estate"):
                 annual_rate = property_rate
             elif asset.category in ("cash", "bank_balance", "savings"):
                 annual_rate = 0
-            elif asset.category == "fixed_deposit" and asset.annual_rate > 0:
-                annual_rate = asset.annual_rate / 100
             elif asset.growth_rate != 0:
                 annual_rate = asset.growth_rate / 100
             elif asset.annual_rate > 0:
