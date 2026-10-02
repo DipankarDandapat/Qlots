@@ -234,6 +234,7 @@ export default function App() {
   const [profileModal, setProfileModal] = useState(false);
   const [profile, setProfile] = useState({ name: '', password: '' });
   const [showApiLog, setShowApiLog] = useState(false);
+  const [healthInfoVisible, setHealthInfoVisible] = useState(false);
   const apiLogs = useApiLogs();
 
   const refresh = async activeToken => {
@@ -430,7 +431,7 @@ export default function App() {
   return <View style={styles.app}>
     <StatusBar barStyle="dark-content" backgroundColor={C.canvas} />
     <Toast toast={toast} />
-    <View style={styles.topbar}><View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}><QlotsLogo size={38} /><View><Text style={styles.brand}>qlots<Text style={styles.brandDot}>.</Text></Text><Text style={styles.greeting}>Your money, in one view</Text></View></View><Pressable onPress={() => { setProfile({ name: user?.name || '', password: '' }); setProfileModal(true); }} onLongPress={() => setShowApiLog(v => !v)} style={styles.avatar}><Text style={styles.avatarText}>{(displayName[0] || 'Q').toUpperCase()}</Text></Pressable></View>
+    <View style={styles.topbar}><View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}><QlotsLogo size={38} /><View><Text style={styles.brand}>Qlots<Text style={styles.brandDot}>.</Text></Text><Text style={styles.greeting}>Your money, in one view</Text></View></View><Pressable onPress={() => { setProfile({ name: user?.name || '', password: '' }); setProfileModal(true); }} onLongPress={() => setShowApiLog(v => !v)} style={styles.avatar}><Text style={styles.avatarText}>{(displayName[0] || 'Q').toUpperCase()}</Text></Pressable></View>
     <ScrollView contentContainerStyle={styles.pageContent} keyboardShouldPersistTaps="handled" refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onPullRefresh} tintColor={C.green} />}>
       {page === 'home' && (() => {
         const nw = dashboard?.totals?.net_worth || 0;
@@ -587,16 +588,22 @@ export default function App() {
               </View>
             </View>
             {/* health sub-bars */}
-            {[{ label: 'Savings', pct: Math.min(100, (dashboard?.health?.metrics?.savings_rate_pct ?? 0) * 2), color: C.green },
-              { label: 'Low debt', pct: Math.max(0, 100 - (dashboard?.health?.metrics?.debt_to_income_pct ?? 0) * 2), color: C.blue },
-              { label: 'Emergency', pct: Math.min(100, (dashboard?.health?.metrics?.emergency_fund_months ?? 0) / 6 * 100), color: C.gold },
+            {[{ label: 'Savings rate', pct: Math.min(100, (dashboard?.health?.metrics?.savings_rate_pct ?? 0) * 2), color: C.green, pts: Math.round(Math.min(25, Math.max(0, dashboard?.health?.metrics?.savings_rate_pct ?? 0) * 0.5)), max: 25 },
+              { label: 'Low debt ratio', pct: Math.max(0, 100 - (dashboard?.health?.metrics?.debt_to_income_pct ?? 0) * 2), color: C.blue, pts: Math.round(Math.max(0, 25 - Math.min(25, (dashboard?.health?.metrics?.debt_to_income_pct ?? 0) * 0.6))), max: 25 },
+              { label: 'Emergency fund', pct: Math.min(100, (dashboard?.health?.metrics?.emergency_fund_months ?? 0) / 6 * 100), color: C.gold, pts: Math.round(Math.min(20, (dashboard?.health?.metrics?.emergency_fund_months ?? 0) * 5)), max: 20 },
+              { label: 'Asset diversity', pct: Math.min(100, (dashboard?.asset_breakdown?.length ?? 0) / 3 * 100), color: '#9B6B9E', pts: Math.min(15, (dashboard?.asset_breakdown?.length ?? 0) * 5), max: 15 },
+              { label: 'Monthly surplus', pct: (dashboard?.health?.metrics?.monthly_surplus ?? 0) > 0 ? 100 : 47, color: '#E07B54', pts: (dashboard?.health?.metrics?.monthly_surplus ?? 0) > 0 ? 15 : 7, max: 15 },
             ].map(b => <View key={b.label} style={{ marginTop: 10 }}>
               <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginBottom: 4 }}>
                 <Text style={styles.healthBarLabel}>{b.label}</Text>
-                <Text style={styles.healthBarLabel}>{Math.round(b.pct)}%</Text>
+                <Text style={styles.healthBarLabel}>{b.pts}/{b.max} pts</Text>
               </View>
               <View style={styles.barBg}><View style={[styles.barFill, { width: `${Math.max(2, b.pct)}%`, backgroundColor: b.color }]} /></View>
             </View>)}
+            <Pressable onPress={() => setHealthInfoVisible(true)} style={{ flexDirection: 'row', alignItems: 'center', gap: 5, marginTop: 14 }}>
+              <View style={{ width: 16, height: 16, borderRadius: 8, backgroundColor: C.mint, alignItems: 'center', justifyContent: 'center' }}><Text style={{ color: C.green, fontSize: 10, fontWeight: '800' }}>i</Text></View>
+              <Text style={{ color: C.green, fontSize: 11, fontWeight: '600' }}>How is this score calculated?</Text>
+            </Pressable>
           </Card>
         </>;
       })()}
@@ -652,6 +659,27 @@ export default function App() {
     <View style={styles.tabbar}>{[['home', 'Overview', '◈'], ['records', 'Wealth', '▤'], ['cashflow', 'Cash flow', '↗'], ['history', 'History', '◷'], ['plan', 'Plan', '◎']].map(([key, label, glyph]) => <Pressable key={key} onPress={() => setPage(key)} style={styles.tabItem}><Text style={[styles.tabIcon, page === key && styles.tabIconActive]}>{glyph}</Text><Text style={[styles.tabLabel, page === key && styles.tabLabelActive]}>{label}</Text></Pressable>)}</View>
     <EntryModal visible={modal} onClose={() => setModal(false)} kind={formKind} form={form} setForm={setForm} onSave={saveEntry} busy={busy} isEdit={!!editEntry} />
     <ProfileModal visible={profileModal} onClose={() => setProfileModal(false)} profile={profile} setProfile={setProfile} onSave={saveProfile} onDeleteAccount={doDeleteAccount} onSignOut={signOut} busy={busy} user={user} />
+    <Modal visible={healthInfoVisible} transparent animationType="fade" onRequestClose={() => setHealthInfoVisible(false)}>
+      <Pressable style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'center', padding: 24 }} onPress={() => setHealthInfoVisible(false)}>
+        <Pressable style={{ backgroundColor: C.card, borderRadius: 20, padding: 22 }} onPress={() => {}}>
+          <Text style={{ color: C.ink, fontWeight: '800', fontSize: 17, marginBottom: 4 }}>Health Score Breakdown</Text>
+          <Text style={{ color: C.muted, fontSize: 12, marginBottom: 16 }}>Score = sum of 5 components (max 100)</Text>
+          {[{ label: 'Savings rate', max: 25, how: 'Surplus ÷ Income × 100. Each 2% savings = 1 pt, up to 25.' },
+            { label: 'Low debt ratio', max: 25, how: 'EMI ÷ Income × 100. 0% debt = 25 pts. Each 1.67% DTI loses 1 pt.' },
+            { label: 'Emergency fund', max: 20, how: 'Liquid cash ÷ Monthly expenses. Each month of cover = 5 pts, up to 6 months.' },
+            { label: 'Asset diversity', max: 15, how: 'Number of different asset categories. 3+ types = 15 pts.' },
+            { label: 'Monthly surplus', max: 15, how: 'Positive surplus = 15 pts. Zero surplus = 7 pts. Deficit = 0 pts.' },
+          ].map(c => <View key={c.label} style={{ marginBottom: 14 }}>
+            <View style={{ flexDirection: 'row', justifyContent: 'space-between' }}>
+              <Text style={{ color: C.ink, fontWeight: '700', fontSize: 13 }}>{c.label}</Text>
+              <Text style={{ color: C.green, fontWeight: '700', fontSize: 13 }}>max {c.max} pts</Text>
+            </View>
+            <Text style={{ color: C.muted, fontSize: 11, marginTop: 3, lineHeight: 16 }}>{c.how}</Text>
+          </View>)}
+          <Text style={{ color: C.muted, fontSize: 10, marginTop: 4 }}>This is an educational indicator based on your entered data — not professional financial advice.</Text>
+        </Pressable>
+      </Pressable>
+    </Modal>
     <Modal visible={showApiLog} animationType="slide" onRequestClose={() => setShowApiLog(false)}>
       <View style={{ flex: 1, backgroundColor: '#0D1F17', paddingTop: (StatusBar.currentHeight || 24) + 8 }}>
         <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 16, paddingBottom: 10, borderBottomWidth: 1, borderColor: '#1A3D2E' }}>
@@ -682,7 +710,7 @@ function AuthScreen({ auth, setAuth, mode, setMode, onSubmit, busy, toast }) {
       <Toast toast={toast} />
       <ScrollView contentContainerStyle={styles.authScroll} keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator={false}>
         <View style={styles.authMark}><QlotsLogo size={72} /></View>
-        <Text style={styles.brandAuth}>qlots<Text style={styles.brandDot}>.</Text></Text>
+        <Text style={styles.brandAuth}>Qlots<Text style={styles.brandDot}>.</Text></Text>
         <Text style={styles.authTitle}>Your financial picture, together.</Text>
         <Text style={styles.authSub}>Track what you own, what you owe, and how your plans could grow.</Text>
         <Card style={styles.authCard}>

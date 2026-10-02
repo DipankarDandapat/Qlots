@@ -358,17 +358,20 @@ def health_score(assets: list[Entry], liabilities: list[Entry], income: list[Ent
     monthly_expenses = monthly_flow(expenses, "expense")
     monthly_emi = sum(x.emi for x in liabilities)
     monthly_surplus = monthly_income - monthly_expenses - monthly_emi
+    has_data = bool(assets or liabilities or income or expenses)
+    if not has_data:
+        return {"score": 0, "label": "Building", "metrics": {"savings_rate_pct": 0, "debt_to_income_pct": 0, "emergency_fund_months": 0, "monthly_surplus": 0}, "disclaimer": "Add your assets, income and expenses to get a financial health score."}
     savings_rate = (monthly_surplus / monthly_income * 100) if monthly_income else 0
     dti = (monthly_emi / monthly_income * 100) if monthly_income else 0
     liquid = sum(entry_value(a) for a in assets if a.category in ("cash", "bank_balance", "savings"))
     emergency_months = liquid / monthly_expenses if monthly_expenses else 0
     score = 0
     score += min(25, max(0, savings_rate) * 0.5)
-    score += 25 if monthly_income == 0 else max(0, 25 - min(25, dti * 0.6))
+    score += max(0, 25 - min(25, dti * 0.6)) if monthly_income > 0 else 0
     score += min(20, emergency_months * 5)
     non_cash = [a for a in assets if a.category not in ("cash", "bank_balance", "savings")]
     score += 15 if len({a.category for a in non_cash}) >= 3 else min(15, len({a.category for a in non_cash}) * 5)
-    score += 15 if monthly_surplus > 0 else (7 if monthly_surplus == 0 else 0)
+    score += 15 if monthly_surplus > 0 else (7 if monthly_surplus == 0 and monthly_income > 0 else 0)
     score = round(min(100, max(0, score)))
     return {"score": score, "label": "Building" if score < 50 else "Steady" if score < 75 else "Strong", "metrics": {"savings_rate_pct": round(savings_rate, 1), "debt_to_income_pct": round(dti, 1), "emergency_fund_months": round(emergency_months, 1), "monthly_surplus": round(monthly_surplus, 2)}, "disclaimer": "An educational indicator based on the information entered—not professional financial advice."}
 
