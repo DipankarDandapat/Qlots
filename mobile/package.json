@@ -20,5 +20,8 @@
     "web": "expo start --web",
     "export:android": "expo export --platform android"
   },
-  "private": true
+  "private": true,
+  "devDependencies": {
+    "sharp": "^0.35.5"
+  }
 }

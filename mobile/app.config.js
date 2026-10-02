@@ -9,13 +9,19 @@ export default {
     userInterfaceStyle: 'light',
     scheme: 'qlots',
     newArchEnabled: true,
+    icon: './assets/icon.png',
     plugins: ['expo-secure-store', 'expo-sharing'],
     android: {
       package: 'com.qlots.app',
       versionCode: 1,
       usesCleartextTraffic: !production,
+      icon: './assets/icon.png',
+      adaptiveIcon: {
+        foregroundImage: './assets/icon.png',
+        backgroundColor: '#0D2B1E',
+      },
     },
     ios: { supportsTablet: true, bundleIdentifier: 'com.qlots.app' },
-    extra: { apiUrl: process.env.EXPO_PUBLIC_API_URL || 'http://10.0.2.2:8000' },
+    extra: { apiUrl: process.env.EXPO_PUBLIC_API_URL || 'https://qlots.onrender.com' },
   },
 };

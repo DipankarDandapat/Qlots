@@ -1,15 +1,60 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import DateTimePicker from '@react-native-community/datetimepicker';
 import {
-  ActivityIndicator, Alert, Dimensions, KeyboardAvoidingView, Modal, Platform, Pressable,
+  ActivityIndicator, Animated, Dimensions, KeyboardAvoidingView, Modal, Platform, Pressable,
   RefreshControl, ScrollView, StatusBar, StyleSheet, Text, TextInput, View,
 } from 'react-native';
-import Svg, { Circle, G, Line, Path, Polyline, Rect, Text as SvgText } from 'react-native-svg';
+import Svg, { Circle, Path, Polyline, Rect } from 'react-native-svg';
 import * as SecureStore from 'expo-secure-store';
 import * as FileSystem from 'expo-file-system/legacy';
 import * as Sharing from 'expo-sharing';
+import QlotsLogo from './QlotsLogo';
 
-const API_URL = (process.env.EXPO_PUBLIC_API_URL || 'http://10.0.2.2:8000').replace(/\/$/, '');
+// ── API Logger (Chucker-style) ────────────────────────────────────────────────
+const apiLogs = [];
+let apiLogListeners = [];
+function addLog(entry) {
+  apiLogs.unshift(entry);
+  if (apiLogs.length > 100) apiLogs.pop();
+  apiLogListeners.forEach(fn => fn([...apiLogs]));
+}
+function useApiLogs() {
+  const [logs, setLogs] = useState([...apiLogs]);
+  useEffect(() => {
+    apiLogListeners.push(setLogs);
+    return () => { apiLogListeners = apiLogListeners.filter(f => f !== setLogs); };
+  }, []);
+  return logs;
+}
+
+// ── Toast ─────────────────────────────────────────────────────────────────────
+let showToastFn = null;
+function useToastController() {
+  const [toast, setToast] = useState(null);
+  const timerRef = useRef(null);
+  showToastFn = (msg, type = 'error') => {
+    if (timerRef.current) clearTimeout(timerRef.current);
+    setToast({ msg, type });
+    timerRef.current = setTimeout(() => setToast(null), 3500);
+  };
+  return toast;
+}
+function showToast(msg, type = 'error') { if (showToastFn) showToastFn(msg, type); }
+function Toast({ toast }) {
+  const anim = useRef(new Animated.Value(0)).current;
+  useEffect(() => {
+    Animated.spring(anim, { toValue: toast ? 1 : 0, useNativeDriver: true }).start();
+  }, [toast]);
+  if (!toast) return null;
+  const bg = toast.type === 'error' ? '#A6473C' : toast.type === 'success' ? '#176B4D' : '#416F8B';
+  return (
+    <Animated.View style={[styles.toast, { backgroundColor: bg, opacity: anim, transform: [{ translateY: anim.interpolate({ inputRange: [0, 1], outputRange: [-20, 0] }) }] }]}>
+      <Text style={styles.toastText}>{toast.msg}</Text>
+    </Animated.View>
+  );
+}
+
+const API_URL = (process.env.EXPO_PUBLIC_API_URL || 'https://qlots.onrender.com').replace(/\/$/, '');
 const C = { ink: '#17251F', muted: '#728078', canvas: '#F5F6F0', card: '#FFFFFF', green: '#176B4D', deep: '#123D2E', mint: '#DFF1E8', lime: '#C8E8A9', gold: '#F2C66D', border: '#E4E9E2', red: '#A6473C', redBg: '#FCEDE9', blue: '#416F8B' };
 const money = (value = 0, compact = false) => {
   const n = Number(value || 0);
@@ -127,24 +172,34 @@ async function request(path, { method = 'GET', body, token, pdf = false } = {}) 
   const headers = {};
   if (body) headers['Content-Type'] = 'application/json';
   if (token) headers.Authorization = `Bearer ${token}`;
-  const response = await fetch(`${API_URL}${path}`, { method, headers, ...(body ? { body: JSON.stringify(body) } : {}) });
-  if (!response.ok) {
-    let message = `Request failed (${response.status})`;
-    try { const data = await response.json(); message = data.detail || message; } catch (_) {}
-    const err = new Error(message);
-    err.status = response.status;
-    throw err;
+  const start = Date.now();
+  const logEntry = { id: start, method, path, status: '...', ms: 0, time: new Date().toLocaleTimeString(), error: null };
+  addLog(logEntry);
+  try {
+    const response = await fetch(`${API_URL}${path}`, { method, headers, ...(body ? { body: JSON.stringify(body) } : {}) });
+    logEntry.status = response.status; logEntry.ms = Date.now() - start;
+    addLog({ ...logEntry });
+    if (!response.ok) {
+      let message = `Request failed (${response.status})`;
+      try { const data = await response.json(); message = data.detail || message; } catch (_) {}
+      const err = new Error(message); err.status = response.status;
+      logEntry.error = message; addLog({ ...logEntry });
+      throw err;
+    }
+    if (pdf) return response.arrayBuffer();
+    if (response.status === 204) return null;
+    return response.json();
+  } catch (e) {
+    if (!logEntry.status || logEntry.status === '...') { logEntry.status = 'ERR'; logEntry.ms = Date.now() - start; logEntry.error = e.message; addLog({ ...logEntry }); }
+    throw e;
   }
-  if (pdf) return response.arrayBuffer();
-  if (response.status === 204) return null;
-  return response.json();
 }
 
 function Button({ title, onPress, secondary = false, small = false, disabled = false, style }) {
   return <Pressable disabled={disabled} onPress={onPress} style={[styles.button, secondary && styles.buttonSecondary, small && styles.buttonSmall, disabled && { opacity: 0.55 }, style]}><Text style={[styles.buttonText, secondary && styles.buttonTextSecondary, small && styles.buttonTextSmall]}>{title}</Text></Pressable>;
 }
 function Field({ label, value, onChangeText, placeholder, keyboardType = 'default', secureTextEntry = false, hint }) {
-  return <View style={styles.fieldWrap}><Text style={styles.fieldLabel}>{label}</Text><TextInput value={value} onChangeText={onChangeText} placeholder={placeholder || label} placeholderTextColor="#98A39C" keyboardType={keyboardType} secureTextEntry={secureTextEntry} autoCapitalize={keyboardType === 'email-address' ? 'none' : 'sentences'} style={styles.input} /><>{hint ? <Text style={styles.hint}>{hint}</Text> : null}</></View>;
+  return <View style={styles.fieldWrap}><Text style={styles.fieldLabel}>{label}</Text><TextInput value={value} onChangeText={onChangeText} placeholder={placeholder || ''} placeholderTextColor="#98A39C" keyboardType={keyboardType} secureTextEntry={secureTextEntry} autoCapitalize={keyboardType === 'email-address' ? 'none' : 'sentences'} style={styles.input} /><>{hint ? <Text style={styles.hint}>{hint}</Text> : null}</></View>;
 }
 function Card({ children, style }) { return <View style={[styles.card, style]}>{children}</View>; }
 function SectionTitle({ title, action, onAction }) { return <View style={styles.sectionTitleRow}><Text style={styles.sectionTitle}>{title}</Text>{action ? <Pressable onPress={onAction}><Text style={styles.link}>{action}</Text></Pressable> : null}</View>; }
@@ -152,6 +207,7 @@ function Pill({ title, active, onPress }) { return <Pressable onPress={onPress} 
 function Empty({ title, body }) { return <View style={styles.empty}><Text style={styles.emptyTitle}>{title}</Text><Text style={styles.muted}>{body}</Text></View>; }
 
 export default function App() {
+  const toast = useToastController();
   const [token, setToken] = useState(null);
   const [user, setUser] = useState(null);
   const [page, setPage] = useState('home');
@@ -171,11 +227,14 @@ export default function App() {
   const [answer, setAnswer] = useState('');
   const [busy, setBusy] = useState(false);
   const [loading, setLoading] = useState(true);
+  const [loadingMsg, setLoadingMsg] = useState('Opening Qlots…');
   const [refreshing, setRefreshing] = useState(false);
   const [history, setHistory] = useState([]);
   const [editEntry, setEditEntry] = useState(null);
   const [profileModal, setProfileModal] = useState(false);
   const [profile, setProfile] = useState({ name: '', password: '' });
+  const [showApiLog, setShowApiLog] = useState(false);
+  const apiLogs = useApiLogs();
 
   const refresh = async activeToken => {
     const [dash, rows, assumptionsData, hist] = await Promise.all([
@@ -191,7 +250,7 @@ export default function App() {
   const handleSessionExpiry = useCallback(async () => {
     await SecureStore.deleteItemAsync('qlots-token');
     setToken(null); setUser(null); setDashboard(null); setEntries([]);
-    Alert.alert('Session expired', 'Please sign in again.');
+    showToast('Session expired. Please sign in again.', 'info');
   }, []);
 
   const safeRequest = useCallback(async (path, opts) => {
@@ -206,9 +265,17 @@ export default function App() {
   useEffect(() => {
     (async () => {
       try {
+        // Check server readiness
+        setLoadingMsg('Connecting to server…');
+        let serverReady = false;
+        for (let i = 0; i < 3; i++) {
+          try { await fetch(`${API_URL}/health`, { signal: AbortSignal.timeout(5000) }); serverReady = true; break; }
+          catch (_) { setLoadingMsg(`Connecting to server… (attempt ${i + 2})`); await new Promise(r => setTimeout(r, 2000)); }
+        }
+        if (!serverReady) setLoadingMsg('Server slow to respond, continuing…');
+        setLoadingMsg('Opening Qlots…');
         const saved = await SecureStore.getItemAsync('qlots-token');
         if (saved) {
-          // Try to refresh the token silently on startup
           try {
             const refreshed = await request('/api/auth/refresh', { method: 'POST', token: saved });
             const newToken = refreshed.access_token;
@@ -217,7 +284,6 @@ export default function App() {
             setToken(newToken);
             await refresh(newToken);
           } catch (_) {
-            // Refresh failed — try with saved token, if that also 401s we sign out
             try {
               setUser(await request('/api/me', { token: saved }));
               setToken(saved);
@@ -240,14 +306,15 @@ export default function App() {
   }, [token, handleSessionExpiry]);
 
   const doAuth = async () => {
-    if (!auth.email.trim() || !auth.password) return Alert.alert('Complete the form', 'Enter your email and password.');
-    if (authMode === 'register' && auth.password.length < 10) return Alert.alert('Password too short', 'Use at least 10 characters.');
+    if (!auth.email.trim() || !auth.password) return showToast('Enter your email and password.');
+    if (authMode === 'register' && auth.password.length < 10) return showToast('Password must be at least 10 characters.');
     setBusy(true);
     try {
       const result = await request(authMode === 'register' ? '/api/auth/register' : '/api/auth/login', { method: 'POST', body: authMode === 'register' ? auth : { email: auth.email, password: auth.password } });
       await SecureStore.setItemAsync('qlots-token', result.access_token);
-      setToken(result.access_token); setUser(result.user); await refresh(result.access_token);
-    } catch (e) { Alert.alert('Could not sign in', `${e.message}\n\nCheck that the Qlots API is running at ${API_URL}.`); }
+      setToken(result.access_token); setUser(result.user);
+      try { await refresh(result.access_token); } catch (_) {}
+    } catch (e) { showToast(e.message); }
     finally { setBusy(false); }
   };
   const signOut = async () => { await SecureStore.deleteItemAsync('qlots-token'); setToken(null); setUser(null); setDashboard(null); setEntries([]); setHistory([]); };
@@ -272,9 +339,9 @@ export default function App() {
     setModal(true);
   };
   const saveEntry = async () => {
-    if (!form.name.trim() || !form.amount) return Alert.alert('Missing details', 'Add a name and amount to continue.');
+    if (!form.name.trim() || !form.amount) return showToast('Add a name and amount to continue.');
     const body = { kind: formKind, category: form.category, name: form.name.trim(), institution: form.institution, amount: Number(form.amount), principal: Number(form.principal || 0), annual_rate: Number(form.annual_rate || 0), frequency: form.frequency, emi: Number(form.emi || 0), tenure_months: Number(form.tenure_months || 0), start_date: form.start_date || null, maturity_date: form.maturity_date || null, growth_rate: Number(form.growth_rate || 0), notes: form.notes || '' };
-    if (formKind === 'asset' && form.category === 'fixed_deposit' && (!body.principal || !body.start_date)) return Alert.alert('FD details needed', 'Enter the original principal and start date for an FD.');
+    if (formKind === 'asset' && form.category === 'fixed_deposit' && (!body.principal || !body.start_date)) return showToast('Enter the original principal and start date for an FD.');
     setBusy(true);
     try {
       if (editEntry) {
@@ -283,26 +350,30 @@ export default function App() {
         await request('/api/entries', { method: 'POST', body, token });
       }
       setModal(false); await refresh(token);
+      showToast('Record saved.', 'success');
     }
-    catch (e) { Alert.alert('Could not save record', e.message); }
+    catch (e) { showToast(e.message); }
     finally { setBusy(false); }
   };
-  const deleteEntry = id => Alert.alert('Delete this record?', 'This removes the item from your Qlots account.', [{ text: 'Cancel', style: 'cancel' }, { text: 'Delete', style: 'destructive', onPress: async () => { try { await request(`/api/entries/${id}`, { method: 'DELETE', token }); await refresh(token); } catch (e) { Alert.alert('Could not delete', e.message); } } }]);
+  const deleteEntry = id => {
+    showToast('Tap again to confirm delete.', 'info');
+    setTimeout(async () => { try { await request(`/api/entries/${id}`, { method: 'DELETE', token }); await refresh(token); showToast('Record deleted.', 'success'); } catch (e) { showToast(e.message); } }, 0);
+  };
   const saveAssumptions = async () => {
     setBusy(true);
     try {
       const body = Object.fromEntries(Object.entries(assumptions).map(([k, v]) => [k, Number(v || 0)]));
       await request('/api/assumptions', { method: 'PUT', body, token });
       const data = await request(`/api/projection/calculate?scenario=${scenario}`, { method: 'POST', token });
-      setForecast(data); await refresh(token); Alert.alert('Projection updated', 'These values are modeled estimates, not guarantees.');
-    } catch (e) { Alert.alert('Could not update projection', e.message); }
+      setForecast(data); await refresh(token); showToast('Projection updated.', 'success');
+    } catch (e) { showToast(e.message); }
     finally { setBusy(false); }
   };
   const askHelper = async () => {
     if (!question.trim()) return;
     setBusy(true); setAnswer('');
     try { const result = await request('/api/ai/chat', { method: 'POST', body: { question }, token }); setAnswer(result.answer + '\n\n' + result.disclaimer); }
-    catch (e) { Alert.alert('Could not answer', e.message); }
+    catch (e) { showToast(e.message); }
     finally { setBusy(false); }
   };
   const makeReport = async () => {
@@ -315,47 +386,51 @@ export default function App() {
       const uri = `${FileSystem.cacheDirectory}qlots-financial-report.pdf`;
       await FileSystem.writeAsStringAsync(uri, base64, { encoding: FileSystem.EncodingType.Base64 });
       if (await Sharing.isAvailableAsync()) await Sharing.shareAsync(uri, { mimeType: 'application/pdf', dialogTitle: 'Share your Qlots report' });
-      else Alert.alert('Report ready', `Saved at ${uri}`);
-    } catch (e) { Alert.alert('Could not generate report', e.message); }
+      else showToast(`Report saved at ${uri}`, 'info');
+    } catch (e) { showToast(e.message); }
     finally { setBusy(false); }
   };
   const runScenario = async next => {
     setScenario(next); setBusy(true);
     try { setForecast(await request(`/api/projection/calculate?scenario=${next}`, { method: 'POST', token })); }
-    catch (e) { Alert.alert('Could not calculate', e.message); }
+    catch (e) { showToast(e.message); }
     finally { setBusy(false); }
   };
-
   const saveProfile = async () => {
-    if (!profile.name.trim()) return Alert.alert('Name required', 'Enter your name.');
+    if (!profile.name.trim()) return showToast('Enter your name.');
     setBusy(true);
     try {
       const body = { name: profile.name.trim(), ...(profile.password ? { password: profile.password } : {}) };
       const updated = await request('/api/me', { method: 'PUT', body, token });
       setUser(updated); setProfileModal(false); setProfile({ name: '', password: '' });
-      Alert.alert('Profile updated', 'Your changes have been saved.');
-    } catch (e) { Alert.alert('Could not update profile', e.message); }
+      showToast('Profile updated.', 'success');
+    } catch (e) { showToast(e.message); }
     finally { setBusy(false); }
   };
+  const confirmDeleteAccount = () => {
+    showToast('Tap “Delete everything” in profile to confirm.', 'info');
+  };
+  const doDeleteAccount = async () => {
+    try { await request('/api/account', { method: 'DELETE', token }); await signOut(); }
+    catch (e) { showToast(e.message); }
+  };
 
-  const confirmDeleteAccount = () => Alert.alert(
-    'Delete account?',
-    'This permanently deletes your account and all data. This cannot be undone.',
-    [{ text: 'Cancel', style: 'cancel' }, { text: 'Delete everything', style: 'destructive', onPress: async () => {
-      try { await request('/api/account', { method: 'DELETE', token }); await signOut(); }
-      catch (e) { Alert.alert('Could not delete account', e.message); }
-    }}]
+  if (loading) return (
+    <View style={styles.loading}>
+      <QlotsLogo size={72} />
+      <ActivityIndicator size="large" color={C.green} style={{ marginTop: 24 }} />
+      <Text style={styles.muted}>{loadingMsg}</Text>
+    </View>
   );
-
-  if (loading) return <View style={styles.loading}><ActivityIndicator size="large" color={C.green} /><Text style={styles.muted}>Opening Qlots…</Text></View>;
-  if (!token) return <AuthScreen auth={auth} setAuth={setAuth} mode={authMode} setMode={setAuthMode} onSubmit={doAuth} busy={busy} />;
+  if (!token) return <AuthScreen auth={auth} setAuth={setAuth} mode={authMode} setMode={setAuthMode} onSubmit={doAuth} busy={busy} toast={toast} />;
 
   const displayName = user?.name || 'Your finances';
   const shownEntries = page === 'records' ? entries.filter(e => e.kind === recordsTab) : page === 'cashflow' ? entries.filter(e => e.kind === flowTab) : [];
 
   return <View style={styles.app}>
     <StatusBar barStyle="dark-content" backgroundColor={C.canvas} />
-    <View style={styles.topbar}><View><Text style={styles.brand}>qlots<Text style={styles.brandDot}>.</Text></Text><Text style={styles.greeting}>Your money, in one view</Text></View><Pressable onPress={() => { setProfile({ name: user?.name || '', password: '' }); setProfileModal(true); }} style={styles.avatar}><Text style={styles.avatarText}>{(displayName[0] || 'Q').toUpperCase()}</Text></Pressable></View>
+    <Toast toast={toast} />
+    <View style={styles.topbar}><View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}><QlotsLogo size={38} /><View><Text style={styles.brand}>qlots<Text style={styles.brandDot}>.</Text></Text><Text style={styles.greeting}>Your money, in one view</Text></View></View><Pressable onPress={() => { setProfile({ name: user?.name || '', password: '' }); setProfileModal(true); }} onLongPress={() => setShowApiLog(v => !v)} style={styles.avatar}><Text style={styles.avatarText}>{(displayName[0] || 'Q').toUpperCase()}</Text></Pressable></View>
     <ScrollView contentContainerStyle={styles.pageContent} keyboardShouldPersistTaps="handled" refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onPullRefresh} tintColor={C.green} />}>
       {page === 'home' && (() => {
         const nw = dashboard?.totals?.net_worth || 0;
@@ -576,15 +651,37 @@ export default function App() {
     </ScrollView>
     <View style={styles.tabbar}>{[['home', 'Overview', '◈'], ['records', 'Wealth', '▤'], ['cashflow', 'Cash flow', '↗'], ['history', 'History', '◷'], ['plan', 'Plan', '◎']].map(([key, label, glyph]) => <Pressable key={key} onPress={() => setPage(key)} style={styles.tabItem}><Text style={[styles.tabIcon, page === key && styles.tabIconActive]}>{glyph}</Text><Text style={[styles.tabLabel, page === key && styles.tabLabelActive]}>{label}</Text></Pressable>)}</View>
     <EntryModal visible={modal} onClose={() => setModal(false)} kind={formKind} form={form} setForm={setForm} onSave={saveEntry} busy={busy} isEdit={!!editEntry} />
-    <ProfileModal visible={profileModal} onClose={() => setProfileModal(false)} profile={profile} setProfile={setProfile} onSave={saveProfile} onDeleteAccount={confirmDeleteAccount} onSignOut={signOut} busy={busy} user={user} />
+    <ProfileModal visible={profileModal} onClose={() => setProfileModal(false)} profile={profile} setProfile={setProfile} onSave={saveProfile} onDeleteAccount={doDeleteAccount} onSignOut={signOut} busy={busy} user={user} />
+    <Modal visible={showApiLog} animationType="slide" onRequestClose={() => setShowApiLog(false)}>
+      <View style={{ flex: 1, backgroundColor: '#0D1F17', paddingTop: (StatusBar.currentHeight || 24) + 8 }}>
+        <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 16, paddingBottom: 10, borderBottomWidth: 1, borderColor: '#1A3D2E' }}>
+          <Text style={{ color: '#C8E8A9', fontWeight: '800', fontSize: 16 }}>API Log</Text>
+          <Pressable onPress={() => setShowApiLog(false)} style={{ padding: 8 }}><Text style={{ color: '#7ECBA1', fontSize: 22 }}>×</Text></Pressable>
+        </View>
+        <ScrollView style={{ flex: 1 }} contentContainerStyle={{ padding: 12, gap: 6 }}>
+          {apiLogs.length === 0 && <Text style={{ color: '#5A7A6A', textAlign: 'center', marginTop: 40 }}>No requests yet</Text>}
+          {apiLogs.map((log, i) => (
+            <View key={i} style={{ backgroundColor: '#1A3D2E', borderRadius: 8, padding: 10 }}>
+              <View style={{ flexDirection: 'row', justifyContent: 'space-between' }}>
+                <Text style={{ color: log.status >= 400 || log.status === 'ERR' ? '#F4A89A' : '#C8E8A9', fontWeight: '700', fontSize: 11 }}>{log.method} {log.path}</Text>
+                <Text style={{ color: log.status >= 400 || log.status === 'ERR' ? '#F4A89A' : '#7ECBA1', fontSize: 11 }}>{log.status} · {log.ms}ms</Text>
+              </View>
+              <Text style={{ color: '#5A7A6A', fontSize: 10, marginTop: 2 }}>{log.time}</Text>
+              {log.error ? <Text style={{ color: '#F4A89A', fontSize: 10, marginTop: 3 }}>{log.error}</Text> : null}
+            </View>
+          ))}
+        </ScrollView>
+      </View>
+    </Modal>
   </View>;
 }
 
-function AuthScreen({ auth, setAuth, mode, setMode, onSubmit, busy }) {
+function AuthScreen({ auth, setAuth, mode, setMode, onSubmit, busy, toast }) {
   return (
     <KeyboardAvoidingView style={styles.authRoot} behavior={Platform.OS === 'ios' ? 'padding' : 'height'}>
+      <Toast toast={toast} />
       <ScrollView contentContainerStyle={styles.authScroll} keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator={false}>
-        <View style={styles.authMark}><Text style={styles.authGlyph}>q</Text></View>
+        <View style={styles.authMark}><QlotsLogo size={72} /></View>
         <Text style={styles.brandAuth}>qlots<Text style={styles.brandDot}>.</Text></Text>
         <Text style={styles.authTitle}>Your financial picture, together.</Text>
         <Text style={styles.authSub}>Track what you own, what you owe, and how your plans could grow.</Text>
@@ -703,7 +800,7 @@ function ProfileModal({ visible, onClose, profile, setProfile, onSave, onDeleteA
 }
 
 const styles = StyleSheet.create({
-  app: { flex: 1, backgroundColor: C.canvas }, loading: { flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: C.canvas, gap: 12 },
+  app: { flex: 1, backgroundColor: C.canvas, paddingBottom: 0 }, loading: { flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: C.canvas, gap: 12 },
   topbar: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 22, paddingTop: Platform.OS === 'android' ? 38 : 58, paddingBottom: 14, backgroundColor: C.canvas },
   brand: { fontSize: 28, fontWeight: '800', color: C.deep, letterSpacing: -1.5 }, brandAuth: { fontSize: 34, fontWeight: '800', color: C.deep, textAlign: 'center', letterSpacing: -1.5 }, brandDot: { color: C.green }, greeting: { fontSize: 12, color: C.muted, marginTop: 1 }, avatar: { height: 40, width: 40, borderRadius: 15, backgroundColor: C.mint, justifyContent: 'center', alignItems: 'center' }, avatarText: { color: C.green, fontWeight: '800', fontSize: 17 },
   pageContent: { paddingHorizontal: 18, paddingBottom: 20 }, hero: { backgroundColor: C.deep, borderRadius: 25, padding: 22, marginTop: 5, marginBottom: 24 }, heroTop: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }, eyebrowLight: { color: '#C1D8CE', fontSize: 10, letterSpacing: 1.4, fontWeight: '700' }, healthBadge: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#285440', borderRadius: 16, paddingVertical: 7, paddingHorizontal: 10, gap: 6 }, healthDot: { height: 6, width: 6, borderRadius: 3, backgroundColor: C.lime }, healthBadgeText: { color: '#EAF5EF', fontSize: 11, fontWeight: '600' }, heroAmount: { color: '#FFF', fontSize: 35, fontWeight: '750', letterSpacing: -1.5, marginTop: 17 }, heroSub: { color: '#BDCEC5', fontSize: 12, marginTop: 5 }, heroDivider: { height: 1, backgroundColor: '#416250', marginVertical: 20 }, heroTotals: { flexDirection: 'row', alignItems: 'center', gap: 22 }, heroSmallLabel: { fontSize: 9, color: '#AFC7B8', letterSpacing: 1.1, fontWeight: '700' }, heroSmallAmount: { color: '#FFF', fontSize: 16, fontWeight: '700', marginTop: 5 }, heroVertical: { width: 1, height: 34, backgroundColor: '#416250' },
@@ -762,10 +859,13 @@ const styles = StyleSheet.create({
   healthBarLabel: { color: C.muted, fontSize: 10 },
   // ── END NEW HOME STYLES ──
   sectionTitleRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 11, marginTop: 1 }, sectionTitle: { fontSize: 17, fontWeight: '700', color: C.ink, letterSpacing: -0.2 }, link: { color: C.green, fontSize: 12, fontWeight: '700' }, projectionRow: { flexDirection: 'row', gap: 10 }, projectionCard: { flex: 1, backgroundColor: C.card, borderWidth: 1, borderColor: C.border, borderRadius: 17, padding: 14 }, projectionCardTint: { backgroundColor: '#EAF3EB' }, projectionLabel: { color: C.muted, fontSize: 9, fontWeight: '700', letterSpacing: 0.45 }, projectionValue: { color: C.ink, fontSize: 20, fontWeight: '800', marginTop: 8 }, disclaimer: { color: C.muted, fontSize: 10, lineHeight: 15, marginTop: 8, marginBottom: 19 }, card: { backgroundColor: C.card, borderRadius: 18, padding: 16, borderWidth: 1, borderColor: C.border, marginBottom: 17 }, splitRow: { flexDirection: 'row', alignItems: 'flex-start', justifyContent: 'space-between', gap: 10 }, metric: { flex: 1 }, metricLabel: { color: C.muted, fontSize: 10, lineHeight: 14 }, metricValue: { color: C.green, fontWeight: '750', fontSize: 15, marginTop: 5 }, allocation: { marginBottom: 13 }, allocationHead: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: 7 }, allocationName: { color: C.ink, fontSize: 12, fontWeight: '600' }, allocationValue: { color: C.ink, fontSize: 12, fontWeight: '700' }, barBg: { height: 6, borderRadius: 6, backgroundColor: '#EEF1ED', overflow: 'hidden' }, barFill: { height: 6, borderRadius: 6, backgroundColor: C.green }, healthCard: { flexDirection: 'row', alignItems: 'center', gap: 15 }, healthScoreWrap: { width: 60, height: 60, borderRadius: 20, backgroundColor: C.mint, flexDirection: 'row', alignItems: 'baseline', justifyContent: 'center', paddingTop: 17 }, healthScore: { fontSize: 21, color: C.green, fontWeight: '800' }, healthScoreOf: { fontSize: 9, color: C.green }, healthTitle: { color: C.ink, fontWeight: '700', marginBottom: 4 }, muted: { color: C.muted, fontSize: 12, lineHeight: 17 },
-  tabbar: { flexDirection: 'row', justifyContent: 'space-around', paddingTop: 10, paddingBottom: Platform.OS === 'android' ? 12 : 22, backgroundColor: C.card, borderTopWidth: 1, borderColor: C.border }, tabItem: { alignItems: 'center', minWidth: 65, gap: 2 }, tabIcon: { color: '#96A099', fontSize: 21, lineHeight: 24 }, tabIconActive: { color: C.green }, tabLabel: { color: C.muted, fontSize: 9, fontWeight: '500' }, tabLabelActive: { color: C.green, fontWeight: '800' },
+  tabbar: { flexDirection: 'row', justifyContent: 'space-around', paddingTop: 10, paddingBottom: Platform.OS === 'android' ? 52 : 22, backgroundColor: C.card, borderTopWidth: 1, borderColor: C.border, elevation: 8 }, tabItem: { alignItems: 'center', minWidth: 65, gap: 2 }, tabIcon: { color: '#96A099', fontSize: 21, lineHeight: 24 }, tabIconActive: { color: C.green }, tabLabel: { color: C.muted, fontSize: 9, fontWeight: '500' }, tabLabelActive: { color: C.green, fontWeight: '800' },
   pageHeading: { marginTop: 8, marginBottom: 17 }, pageTitle: { color: C.ink, fontSize: 27, fontWeight: '800', letterSpacing: -0.8 }, pageSubtitle: { color: C.muted, fontSize: 13, marginTop: 4 }, pillRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginBottom: 10 }, pill: { paddingVertical: 9, paddingHorizontal: 13, borderRadius: 20, backgroundColor: '#EAEEE8', borderWidth: 1, borderColor: 'transparent' }, pillActive: { backgroundColor: C.deep, borderColor: C.deep }, pillText: { color: C.muted, fontSize: 11, fontWeight: '600' }, pillTextActive: { color: '#FFF' }, button: { minHeight: 48, backgroundColor: C.green, borderRadius: 14, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 16 }, buttonSecondary: { backgroundColor: C.mint, borderWidth: 1, borderColor: '#CDE4D6' }, buttonSmall: { minHeight: 38 }, buttonText: { color: '#FFF', fontSize: 14, fontWeight: '750' }, buttonTextSecondary: { color: C.green }, buttonTextSmall: { fontSize: 12 },
   recordCard: { flexDirection: 'row', alignItems: 'center', padding: 13, gap: 11, marginBottom: 9 }, recordIcon: { width: 38, height: 38, borderRadius: 13, backgroundColor: C.mint, justifyContent: 'center', alignItems: 'center' }, recordGlyph: { color: C.green, fontSize: 20, fontWeight: '700' }, recordInfo: { flex: 1 }, recordName: { color: C.ink, fontSize: 13, fontWeight: '700', marginBottom: 2 }, recordRight: { alignItems: 'flex-end', gap: 5 }, recordAmount: { color: C.green, fontWeight: '800', fontSize: 13 }, editLink: { color: C.blue, fontSize: 10, fontWeight: '600' }, deleteLink: { color: C.red, fontSize: 10, fontWeight: '600' }, empty: { alignItems: 'center', paddingVertical: 22, gap: 6 }, emptyTitle: { color: C.ink, fontSize: 14, fontWeight: '700', textAlign: 'center' }, flowBalance: { borderTopWidth: 1, borderColor: C.border, marginTop: 15, paddingTop: 12, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }, flowBalanceAmount: { fontSize: 19, fontWeight: '800' },
   cardHeading: { color: C.ink, fontWeight: '750', fontSize: 15, marginBottom: 5 }, fieldWrap: { marginTop: 14 }, fieldLabel: { color: C.ink, fontSize: 11, fontWeight: '700', marginBottom: 7 }, input: { backgroundColor: '#F8F9F6', borderWidth: 1, borderColor: C.border, minHeight: 47, borderRadius: 12, paddingHorizontal: 12, color: C.ink, fontSize: 14 }, dateInput: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingVertical: 13 }, hint: { color: C.muted, fontSize: 10, lineHeight: 15, marginTop: 5 }, forecastRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 10 }, forecastAmount: { color: C.green, fontWeight: '800', fontSize: 17 }, questionInput: { minHeight: 72, textAlignVertical: 'top', paddingTop: 12, marginTop: 13, marginBottom: 10 }, answerBox: { borderRadius: 13, padding: 13, backgroundColor: C.canvas, marginTop: 13 }, answerText: { color: C.ink, fontSize: 12, lineHeight: 19 },
-  authRoot: { flex: 1, backgroundColor: C.canvas }, authScroll: { flexGrow: 1, justifyContent: 'center', padding: 23, paddingTop: 54, paddingBottom: 30 }, authMark: { height: 58, width: 58, borderRadius: 20, backgroundColor: C.deep, alignSelf: 'center', alignItems: 'center', justifyContent: 'center', marginBottom: 13 }, authGlyph: { color: C.lime, fontSize: 36, fontWeight: '800' }, authTitle: { color: C.ink, fontSize: 23, lineHeight: 29, fontWeight: '800', textAlign: 'center', marginTop: 14 }, authSub: { color: C.muted, fontSize: 13, lineHeight: 19, textAlign: 'center', marginTop: 8, marginBottom: 19, paddingHorizontal: 12 }, authCard: { padding: 18, marginBottom: 12 }, authToggle: { alignItems: 'center', paddingVertical: 16 }, authToggleText: { color: C.green, fontSize: 12, fontWeight: '700' }, authFoot: { color: C.muted, textAlign: 'center', fontSize: 10, lineHeight: 15, paddingHorizontal: 8 },
-  modalRoot: { flex: 1, backgroundColor: C.canvas }, modalHeader: { paddingTop: Platform.OS === 'ios' ? 28 : 20, paddingHorizontal: 20, paddingBottom: 12, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', backgroundColor: C.canvas }, modalEyebrow: { fontSize: 9, color: C.green, fontWeight: '800', letterSpacing: 1.1 }, modalTitle: { color: C.ink, fontSize: 21, fontWeight: '800', marginTop: 4 }, closeButton: { height: 36, width: 36, borderRadius: 13, backgroundColor: '#E8ECE6', alignItems: 'center', justifyContent: 'center' }, closeText: { color: C.ink, fontSize: 24, lineHeight: 27 }, modalContent: { paddingHorizontal: 20, paddingBottom: 30 }, categoryGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 7 }, modalFoot: { color: C.muted, fontSize: 10, lineHeight: 15, marginTop: 14, textAlign: 'center' }, deletAccountBtn: { alignItems: 'center', paddingVertical: 18 }, deleteAccountText: { color: C.red, fontSize: 12, fontWeight: '600' }, historyRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', padding: 14, marginBottom: 8 }, historyDate: { color: C.muted, fontSize: 12 }, historyRight: { alignItems: 'flex-end' }, historyAmount: { color: C.ink, fontWeight: '700', fontSize: 14 }, historyDelta: { fontSize: 11, fontWeight: '600', marginTop: 2 },
+  authRoot: { flex: 1, backgroundColor: C.canvas }, authScroll: { flexGrow: 1, justifyContent: 'center', padding: 23, paddingTop: 54, paddingBottom: 30 }, authMark: { alignSelf: 'center', marginBottom: 13 }, authGlyph: { color: C.lime, fontSize: 36, fontWeight: '800' }, authTitle: { color: C.ink, fontSize: 23, lineHeight: 29, fontWeight: '800', textAlign: 'center', marginTop: 14 }, authSub: { color: C.muted, fontSize: 13, lineHeight: 19, textAlign: 'center', marginTop: 8, marginBottom: 19, paddingHorizontal: 12 }, authCard: { padding: 18, marginBottom: 12 }, authToggle: { alignItems: 'center', paddingVertical: 16 }, authToggleText: { color: C.green, fontSize: 12, fontWeight: '700' }, authFoot: { color: C.muted, textAlign: 'center', fontSize: 10, lineHeight: 15, paddingHorizontal: 8 },
+  modalRoot: { flex: 1, backgroundColor: C.canvas }, modalHeader: { paddingTop: Platform.OS === 'ios' ? 28 : (StatusBar.currentHeight || 24) + 12, paddingHorizontal: 20, paddingBottom: 12, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', backgroundColor: C.canvas }, modalEyebrow: { fontSize: 9, color: C.green, fontWeight: '800', letterSpacing: 1.1 }, modalTitle: { color: C.ink, fontSize: 21, fontWeight: '800', marginTop: 4 }, closeButton: { height: 36, width: 36, borderRadius: 13, backgroundColor: '#E8ECE6', alignItems: 'center', justifyContent: 'center' }, closeText: { color: C.ink, fontSize: 24, lineHeight: 27 }, modalContent: { paddingHorizontal: 20, paddingBottom: 30 }, categoryGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 7 }, modalFoot: { color: C.muted, fontSize: 10, lineHeight: 15, marginTop: 14, textAlign: 'center' }, deletAccountBtn: { alignItems: 'center', paddingVertical: 18 }, deleteAccountText: { color: C.red, fontSize: 12, fontWeight: '600' }, historyRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', padding: 14, marginBottom: 8 }, historyDate: { color: C.muted, fontSize: 12 }, historyRight: { alignItems: 'flex-end' }, historyAmount: { color: C.ink, fontWeight: '700', fontSize: 14 }, historyDelta: { fontSize: 11, fontWeight: '600', marginTop: 2 },
+  toast: { position: 'absolute', top: (StatusBar.currentHeight || 24) + 8, left: 16, right: 16, borderRadius: 12, padding: 14, zIndex: 999, elevation: 20 },
+  toastText: { color: '#FFF', fontSize: 13, fontWeight: '600', textAlign: 'center' },
 });
+

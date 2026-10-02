@@ -24,7 +24,7 @@ JWT_SECRET = os.getenv("JWT_SECRET", "qlots-local-development-key-change-before-
 if APP_ENV == "production" and JWT_SECRET == "qlots-local-development-key-change-before-release":
     raise RuntimeError("Set a unique JWT_SECRET before starting Qlots in production")
 DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./qlots.db")
-TOKEN_HOURS = int(os.getenv("TOKEN_HOURS", "24"))
+TOKEN_HOURS = int(os.getenv("TOKEN_HOURS", "168"))
 
 
 def utcnow_naive() -> datetime:
