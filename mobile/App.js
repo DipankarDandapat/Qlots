@@ -10,11 +10,17 @@ import * as FileSystem from 'expo-file-system/legacy';
 import * as Sharing from 'expo-sharing';
 import QlotsLogo from './QlotsLogo';
 
+// ── Config (must be before any code that references these) ───────────────────
+const API_URL = (process.env.EXPO_PUBLIC_API_URL || 'https://one.qlots.in').replace(/\/$/, '');
+const NETWORK_LOG_ENABLED = process.env.EXPO_PUBLIC_NETWORK_LOG === 'true';
+
 // ── API Logger (Chucker-style) ────────────────────────────────────────────────
 const apiLogs = [];
 let apiLogListeners = [];
 function addLog(entry) {
-  apiLogs.unshift(entry);
+  if (!NETWORK_LOG_ENABLED) return;
+  const idx = apiLogs.findIndex(l => l.id === entry.id);
+  if (idx >= 0) apiLogs[idx] = entry; else apiLogs.unshift(entry);
   if (apiLogs.length > 100) apiLogs.pop();
   apiLogListeners.forEach(fn => fn([...apiLogs]));
 }
@@ -54,7 +60,6 @@ function Toast({ toast }) {
   );
 }
 
-const API_URL = (process.env.EXPO_PUBLIC_API_URL || 'https://qlots.onrender.com').replace(/\/$/, '');
 const C = { ink: '#17251F', muted: '#728078', canvas: '#F5F6F0', card: '#FFFFFF', green: '#176B4D', deep: '#123D2E', mint: '#DFF1E8', lime: '#C8E8A9', gold: '#F2C66D', border: '#E4E9E2', red: '#A6473C', redBg: '#FCEDE9', blue: '#416F8B' };
 const money = (value = 0, compact = false) => {
   const n = Number(value || 0);
@@ -168,30 +173,49 @@ function CashFlowBar({ income, expenses }) {
 }
 // ─────────────────────────────────────────────────────────────────────────────
 
-async function request(path, { method = 'GET', body, token, pdf = false } = {}) {
-  const headers = {};
-  if (body) headers['Content-Type'] = 'application/json';
+async function request(path, { method = 'GET', body, token, pdf = false, timeoutMs = 10000 } = {}) {
+  const headers = { 'Content-Type': 'application/json' };
+  if (!body) delete headers['Content-Type'];
   if (token) headers.Authorization = `Bearer ${token}`;
   const start = Date.now();
-  const logEntry = { id: start, method, path, status: '...', ms: 0, time: new Date().toLocaleTimeString(), error: null };
-  addLog(logEntry);
+  const reqBody = body ? JSON.stringify(body) : null;
+  const fullUrl = `${API_URL}${path}`;
+  const logEntry = NETWORK_LOG_ENABLED
+    ? { id: start, method, path, url: fullUrl, status: '...', ms: 0, time: new Date().toLocaleTimeString(), error: null, reqBody, resBody: null, reqHeaders: { ...headers } }
+    : null;
+  if (logEntry) addLog({ ...logEntry });
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    const response = await fetch(`${API_URL}${path}`, { method, headers, ...(body ? { body: JSON.stringify(body) } : {}) });
-    logEntry.status = response.status; logEntry.ms = Date.now() - start;
-    addLog({ ...logEntry });
+    const response = await fetch(fullUrl, { method, headers, signal: controller.signal, ...(reqBody ? { body: reqBody } : {}) });
+    clearTimeout(timer);
+    if (logEntry) { logEntry.status = response.status; logEntry.ms = Date.now() - start; }
     if (!response.ok) {
       let message = `Request failed (${response.status})`;
-      try { const data = await response.json(); message = data.detail || message; } catch (_) {}
+      if (NETWORK_LOG_ENABLED) {
+        let rawBody = null;
+        try { rawBody = await response.text(); const data = JSON.parse(rawBody); message = data.detail || message; } catch (_) {}
+        logEntry.error = message; logEntry.resBody = rawBody; addLog({ ...logEntry });
+      } else {
+        try { const data = await response.json(); message = data.detail || message; } catch (_) {}
+      }
       const err = new Error(message); err.status = response.status;
-      logEntry.error = message; addLog({ ...logEntry });
       throw err;
     }
-    if (pdf) return response.arrayBuffer();
-    if (response.status === 204) return null;
+    if (pdf) { if (logEntry) addLog({ ...logEntry }); return response.arrayBuffer(); }
+    if (response.status === 204) { if (logEntry) addLog({ ...logEntry }); return null; }
+    if (NETWORK_LOG_ENABLED) {
+      const text = await response.text();
+      logEntry.resBody = text; addLog({ ...logEntry });
+      return JSON.parse(text);
+    }
     return response.json();
   } catch (e) {
-    if (!logEntry.status || logEntry.status === '...') { logEntry.status = 'ERR'; logEntry.ms = Date.now() - start; logEntry.error = e.message; addLog({ ...logEntry }); }
-    throw e;
+    clearTimeout(timer);
+    const isTimeout = e.name === 'AbortError';
+    const finalErr = isTimeout ? Object.assign(new Error(`Request timed out (${timeoutMs / 1000}s)`), { status: 0 }) : e;
+    if (logEntry && (!logEntry.status || logEntry.status === '...')) { logEntry.status = isTimeout ? 'TIMEOUT' : 'ERR'; logEntry.ms = Date.now() - start; logEntry.error = finalErr.message; addLog({ ...logEntry }); }
+    throw finalErr;
   }
 }
 
@@ -227,7 +251,6 @@ export default function App() {
   const [answer, setAnswer] = useState('');
   const [busy, setBusy] = useState(false);
   const [loading, setLoading] = useState(true);
-  const [loadingMsg, setLoadingMsg] = useState('Opening Qlots…');
   const [refreshing, setRefreshing] = useState(false);
   const [history, setHistory] = useState([]);
   const [editEntry, setEditEntry] = useState(null);
@@ -236,6 +259,7 @@ export default function App() {
   const [showApiLog, setShowApiLog] = useState(false);
   const [healthInfoVisible, setHealthInfoVisible] = useState(false);
   const apiLogs = useApiLogs();
+  const errorCount = apiLogs.filter(l => l.status >= 400 || l.status === 'ERR').length;
 
   const refresh = async activeToken => {
     const [dash, rows, assumptionsData, hist] = await Promise.all([
@@ -250,7 +274,7 @@ export default function App() {
 
   const handleSessionExpiry = useCallback(async () => {
     await SecureStore.deleteItemAsync('qlots-token');
-    setToken(null); setUser(null); setDashboard(null); setEntries([]);
+    setToken(null); setUser(null); setDashboard(null); setEntries([]); setHistory([]); setForecast(null);
     showToast('Session expired. Please sign in again.', 'info');
   }, []);
 
@@ -263,34 +287,45 @@ export default function App() {
     }
   }, [handleSessionExpiry]);
 
+  // Global 401 guard for the refresh() bulk call
+  const safeRefresh = useCallback(async (activeToken) => {
+    try {
+      await refresh(activeToken);
+    } catch (e) {
+      if (e.status === 401) { handleSessionExpiry(); }
+    }
+  }, [handleSessionExpiry]);
+
   useEffect(() => {
     (async () => {
       try {
-        // Check server readiness
-        setLoadingMsg('Connecting to server…');
-        let serverReady = false;
-        for (let i = 0; i < 3; i++) {
-          try { await fetch(`${API_URL}/health`, { signal: AbortSignal.timeout(5000) }); serverReady = true; break; }
-          catch (_) { setLoadingMsg(`Connecting to server… (attempt ${i + 2})`); await new Promise(r => setTimeout(r, 2000)); }
-        }
-        if (!serverReady) setLoadingMsg('Server slow to respond, continuing…');
-        setLoadingMsg('Opening Qlots…');
+        try { await request('/health', { timeoutMs: 5000 }); } catch (_) { /* server unreachable or error, continue anyway */ }
         const saved = await SecureStore.getItemAsync('qlots-token');
         if (saved) {
           try {
             const refreshed = await request('/api/auth/refresh', { method: 'POST', token: saved });
             const newToken = refreshed.access_token;
             await SecureStore.setItemAsync('qlots-token', newToken);
-            setUser(await request('/api/me', { token: newToken }));
+            const [me] = await Promise.all([
+              request('/api/me', { token: newToken }),
+              refresh(newToken),
+            ]);
+            setUser(me);
             setToken(newToken);
-            await refresh(newToken);
-          } catch (_) {
-            try {
-              setUser(await request('/api/me', { token: saved }));
-              setToken(saved);
-              await refresh(saved);
-            } catch (e) {
-              if (e.status === 401) await SecureStore.deleteItemAsync('qlots-token');
+          } catch (e) {
+            if (e.status === 401) {
+              await SecureStore.deleteItemAsync('qlots-token');
+            } else {
+              try {
+                const [me] = await Promise.all([
+                  request('/api/me', { token: saved }),
+                  refresh(saved),
+                ]);
+                setUser(me);
+                setToken(saved);
+              } catch (e2) {
+                if (e2.status === 401) await SecureStore.deleteItemAsync('qlots-token');
+              }
             }
           }
         }
@@ -302,7 +337,7 @@ export default function App() {
   const onPullRefresh = useCallback(async () => {
     if (!token) return;
     setRefreshing(true);
-    try { await refresh(token); } catch (e) { if (e.status === 401) handleSessionExpiry(); }
+    try { await safeRefresh(token); }
     finally { setRefreshing(false); }
   }, [token, handleSessionExpiry]);
 
@@ -315,8 +350,9 @@ export default function App() {
       await SecureStore.setItemAsync('qlots-token', result.access_token);
       // Clear all previous user data before loading new user's data
       setDashboard(null); setEntries([]); setHistory([]); setForecast(null);
-      setToken(result.access_token); setUser(result.user);
-      try { await refresh(result.access_token); } catch (_) {}
+      setUser(result.user);
+      try { await refresh(result.access_token); } catch (e) { if (e.status === 401) handleSessionExpiry(); }
+      setToken(result.access_token);
     } catch (e) { showToast(e.message); }
     finally { setBusy(false); }
   };
@@ -350,11 +386,11 @@ export default function App() {
     setBusy(true);
     try {
       if (editEntry) {
-        await request(`/api/entries/${editEntry.id}`, { method: 'PUT', body, token });
+        await safeRequest(`/api/entries/${editEntry.id}`, { method: 'PUT', body, token });
       } else {
-        await request('/api/entries', { method: 'POST', body, token });
+        await safeRequest('/api/entries', { method: 'POST', body, token });
       }
-      setModal(false); await refresh(token);
+      setModal(false); await safeRefresh(token);
       showToast('Record saved.', 'success');
     }
     catch (e) { showToast(e.message); }
@@ -362,15 +398,15 @@ export default function App() {
   };
   const deleteEntry = id => {
     showToast('Tap again to confirm delete.', 'info');
-    setTimeout(async () => { try { await request(`/api/entries/${id}`, { method: 'DELETE', token }); await refresh(token); showToast('Record deleted.', 'success'); } catch (e) { showToast(e.message); } }, 0);
+    setTimeout(async () => { try { await safeRequest(`/api/entries/${id}`, { method: 'DELETE', token }); await safeRefresh(token); showToast('Record deleted.', 'success'); } catch (e) { if (e) showToast(e.message); } }, 0);
   };
   const saveAssumptions = async () => {
     setBusy(true);
     try {
       const body = Object.fromEntries(Object.entries(assumptions).map(([k, v]) => [k, Number(v || 0)]));
-      await request('/api/assumptions', { method: 'PUT', body, token });
-      const data = await request(`/api/projection/calculate?scenario=${scenario}`, { method: 'POST', token });
-      setForecast(data); await refresh(token); showToast('Projection updated.', 'success');
+      await safeRequest('/api/assumptions', { method: 'PUT', body, token });
+      const data = await safeRequest(`/api/projection/calculate?scenario=${scenario}`, { method: 'POST', token });
+      if (data) { setForecast(data); await safeRefresh(token); showToast('Projection updated.', 'success'); }
     } catch (e) { showToast(e.message); }
     finally { setBusy(false); }
   };
@@ -425,10 +461,22 @@ export default function App() {
     <View style={styles.loading}>
       <QlotsLogo size={72} />
       <ActivityIndicator size="large" color={C.green} style={{ marginTop: 24 }} />
-      <Text style={styles.muted}>{loadingMsg}</Text>
+      {NETWORK_LOG_ENABLED && (
+        <Pressable onPress={() => setShowApiLog(true)} style={[styles.chuckerBubble, { position: 'absolute', bottom: 32, right: 16 }]}>
+          <Text style={styles.chuckerBubbleText}>🌐</Text>
+          {apiLogs.length > 0 && (
+            <View style={[styles.chuckerBadge, errorCount > 0 && { backgroundColor: '#A6473C' }]}>
+              <Text style={styles.chuckerBadgeText}>{errorCount > 0 ? errorCount : apiLogs.length}</Text>
+            </View>
+          )}
+        </Pressable>
+      )}
+      <Modal visible={showApiLog} animationType="slide" onRequestClose={() => setShowApiLog(false)}>
+        <ApiLogPanel onClose={() => setShowApiLog(false)} />
+      </Modal>
     </View>
   );
-  if (!token) return <AuthScreen auth={auth} setAuth={setAuth} mode={authMode} setMode={setAuthMode} onSubmit={doAuth} busy={busy} toast={toast} />;
+  if (!token) return <AuthScreen auth={auth} setAuth={setAuth} mode={authMode} setMode={setAuthMode} onSubmit={doAuth} busy={busy} toast={toast} showApiLog={showApiLog} setShowApiLog={setShowApiLog} apiLogs={apiLogs} errorCount={errorCount} />;
 
   const displayName = user?.name || 'Your finances';
   const shownEntries = page === 'records' ? entries.filter(e => e.kind === recordsTab) : page === 'cashflow' ? entries.filter(e => e.kind === flowTab) : [];
@@ -436,7 +484,7 @@ export default function App() {
   return <View style={styles.app}>
     <StatusBar barStyle="dark-content" backgroundColor={C.canvas} />
     <Toast toast={toast} />
-    <View style={styles.topbar}><View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}><QlotsLogo size={38} /><View><Text style={styles.brand}>Qlots<Text style={styles.brandDot}>.</Text></Text><Text style={styles.greeting}>Your money, in one view</Text></View></View><Pressable onPress={() => { setProfile({ name: user?.name || '', password: '' }); setProfileModal(true); }} onLongPress={() => setShowApiLog(v => !v)} style={styles.avatar}><Text style={styles.avatarText}>{(displayName[0] || 'Q').toUpperCase()}</Text></Pressable></View>
+    <View style={styles.topbar}><View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}><QlotsLogo size={38} /><View><Text style={styles.brand}>Qlots<Text style={styles.brandDot}>.</Text></Text><Text style={styles.greeting}>Your money, in one view</Text></View></View><Pressable onPress={() => { setProfile({ name: user?.name || '', password: '' }); setProfileModal(true); }} style={styles.avatar}><Text style={styles.avatarText}>{(displayName[0] || 'Q').toUpperCase()}</Text></Pressable></View>
     <ScrollView contentContainerStyle={styles.pageContent} keyboardShouldPersistTaps="handled" refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onPullRefresh} tintColor={C.green} />}>
       {page === 'home' && (() => {
         const nw = dashboard?.totals?.net_worth || 0;
@@ -628,7 +676,7 @@ export default function App() {
       </>}
       {page === 'history' && <>
         <PageHeading title="Net worth history" subtitle="Daily snapshots since you started tracking." />
-        {history.length > 1 ? history.map((s, i) => {
+        {history.length >= 1 ? history.map((s, i) => {
           const prev = history[i - 1];
           const delta = prev ? s.net_worth - prev.net_worth : 0;
           return <Card key={s.date} style={styles.historyRow}>
@@ -700,26 +748,21 @@ export default function App() {
       </Pressable>
     </Modal>
     <Modal visible={showApiLog} animationType="slide" onRequestClose={() => setShowApiLog(false)}>
-      <View style={{ flex: 1, backgroundColor: '#0D1F17', paddingTop: (StatusBar.currentHeight || 24) + 8 }}>
-        <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 16, paddingBottom: 10, borderBottomWidth: 1, borderColor: '#1A3D2E' }}>
-          <Text style={{ color: '#C8E8A9', fontWeight: '800', fontSize: 16 }}>API Log</Text>
-          <Pressable onPress={() => setShowApiLog(false)} style={{ padding: 8 }}><Text style={{ color: '#7ECBA1', fontSize: 22 }}>×</Text></Pressable>
-        </View>
-        <ScrollView style={{ flex: 1 }} contentContainerStyle={{ padding: 12, gap: 6 }}>
-          {apiLogs.length === 0 && <Text style={{ color: '#5A7A6A', textAlign: 'center', marginTop: 40 }}>No requests yet</Text>}
-          {apiLogs.map((log, i) => (
-            <View key={i} style={{ backgroundColor: '#1A3D2E', borderRadius: 8, padding: 10 }}>
-              <View style={{ flexDirection: 'row', justifyContent: 'space-between' }}>
-                <Text style={{ color: log.status >= 400 || log.status === 'ERR' ? '#F4A89A' : '#C8E8A9', fontWeight: '700', fontSize: 11 }}>{log.method} {log.path}</Text>
-                <Text style={{ color: log.status >= 400 || log.status === 'ERR' ? '#F4A89A' : '#7ECBA1', fontSize: 11 }}>{log.status} · {log.ms}ms</Text>
-              </View>
-              <Text style={{ color: '#5A7A6A', fontSize: 10, marginTop: 2 }}>{log.time}</Text>
-              {log.error ? <Text style={{ color: '#F4A89A', fontSize: 10, marginTop: 3 }}>{log.error}</Text> : null}
-            </View>
-          ))}
-        </ScrollView>
-      </View>
+      <ApiLogPanel onClose={() => setShowApiLog(false)} />
     </Modal>
+    {NETWORK_LOG_ENABLED && (
+      <Pressable
+        onPress={() => setShowApiLog(v => !v)}
+        style={styles.chuckerBubble}
+      >
+        <Text style={styles.chuckerBubbleText}>🌐</Text>
+        {apiLogs.length > 0 && (
+          <View style={[styles.chuckerBadge, errorCount > 0 && { backgroundColor: '#A6473C' }]}>
+            <Text style={styles.chuckerBadgeText}>{errorCount > 0 ? errorCount : apiLogs.length}</Text>
+          </View>
+        )}
+      </Pressable>
+    )}
   </View>;
 }
 
@@ -727,45 +770,116 @@ export default function App() {
 function ApiLogPanel({ onClose }) {
   const logs = useApiLogs();
   const [selected, setSelected] = useState(null);
-  if (!NETWORK_LOG_ENABLED) return (
-    <View style={{ flex: 1, backgroundColor: '#0D1F17', paddingTop: (StatusBar.currentHeight || 24) + 8, alignItems: 'center', justifyContent: 'center' }}>
-      <Text style={{ color: '#5A7A6A', textAlign: 'center', paddingHorizontal: 32, lineHeight: 22 }}>Network logging is disabled.{'\n\n'}Set EXPO_PUBLIC_NETWORK_LOG=true in .env and rebuild to enable.</Text>
-      <Pressable onPress={onClose} style={{ marginTop: 24, backgroundColor: '#1A3D2E', borderRadius: 10, paddingHorizontal: 20, paddingVertical: 10 }}><Text style={{ color: '#C8E8A9', fontWeight: '700' }}>Close</Text></Pressable>
-    </View>
-  );
+
+  const prettyJson = str => {
+    if (!str) return null;
+    try { return JSON.stringify(JSON.parse(str), null, 2); } catch { return str; }
+  };
+
+  const S = {
+    wrap: { flex: 1, backgroundColor: '#0D1F17', paddingTop: (StatusBar.currentHeight || 24) + 8 },
+    header: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 16, paddingBottom: 10, borderBottomWidth: 1, borderColor: '#1A3D2E' },
+    headerTitle: { color: '#C8E8A9', fontWeight: '800', fontSize: 16 },
+    closeBtn: { padding: 8 },
+    closeText: { color: '#7ECBA1', fontSize: 22 },
+    // list
+    row: { backgroundColor: '#1A3D2E', borderRadius: 8, padding: 10, marginBottom: 6 },
+    rowTop: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: 2 },
+    rowMethod: { fontWeight: '800', fontSize: 11, flex: 1 },
+    rowStatus: { fontSize: 11 },
+    rowUrl: { fontSize: 9, marginTop: 1, marginBottom: 2 },
+    rowTime: { color: '#5A7A6A', fontSize: 10, marginTop: 2 },
+    rowError: { color: '#F4A89A', fontSize: 10, marginTop: 3 },
+    rowHint: { color: '#3A6A4A', fontSize: 9, marginTop: 2 },
+    // detail
+    back: { color: '#7ECBA1', fontSize: 12, marginBottom: 14 },
+    detailTitle: { color: '#C8E8A9', fontWeight: '800', fontSize: 14, marginBottom: 2 },
+    detailUrl: { color: '#7ECBA1', fontSize: 10, marginBottom: 4, lineHeight: 15 },
+    detailMeta: { color: '#5A7A6A', fontSize: 11, marginBottom: 10 },
+    sectionLabel: { color: '#7ECBA1', fontWeight: '700', fontSize: 11, marginTop: 16, marginBottom: 6, letterSpacing: 0.5 },
+    codeBlock: { color: '#C8E8A9', fontSize: 10, fontFamily: 'monospace', backgroundColor: '#1A3D2E', padding: 10, borderRadius: 6, lineHeight: 16 },
+    errorBlock: { color: '#F4A89A', fontSize: 11, backgroundColor: '#2A1A1A', padding: 10, borderRadius: 6, lineHeight: 16 },
+    emptyText: { color: '#5A7A6A', textAlign: 'center', marginTop: 40 },
+  };
+
+  const isErr = log => log.status >= 400 || log.status === 'ERR';
+
   return (
-    <View style={{ flex: 1, backgroundColor: '#0D1F17', paddingTop: (StatusBar.currentHeight || 24) + 8 }}>
-      <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 16, paddingBottom: 10, borderBottomWidth: 1, borderColor: '#1A3D2E' }}>
-        <Text style={{ color: '#C8E8A9', fontWeight: '800', fontSize: 16 }}>Network Log ({logs.length})</Text>
-        <Pressable onPress={onClose} style={{ padding: 8 }}><Text style={{ color: '#7ECBA1', fontSize: 22 }}>×</Text></Pressable>
+    <View style={S.wrap}>
+      <View style={S.header}>
+        <Text style={S.headerTitle}>
+          {selected ? `${selected.method} ${selected.path}` : `Network Log (${logs.length})`}
+        </Text>
+        <Pressable onPress={selected ? () => setSelected(null) : onClose} style={S.closeBtn}>
+          <Text style={S.closeText}>{selected ? '←' : '×'}</Text>
+        </Pressable>
       </View>
+
       {selected ? (
-        <ScrollView style={{ flex: 1 }} contentContainerStyle={{ padding: 14 }}>
-          <Pressable onPress={() => setSelected(null)} style={{ marginBottom: 12 }}><Text style={{ color: '#7ECBA1', fontSize: 12 }}>← Back to list</Text></Pressable>
-          <Text style={{ color: '#C8E8A9', fontWeight: '800', fontSize: 13 }}>{selected.method} {selected.path}</Text>
-          <Text style={{ color: '#5A7A6A', fontSize: 11, marginTop: 2 }}>{selected.time} · {selected.status} · {selected.ms}ms</Text>
-          {selected.error && <Text style={{ color: '#F4A89A', fontSize: 12, marginTop: 8, backgroundColor: '#2A1A1A', padding: 8, borderRadius: 6 }}>{selected.error}</Text>}
-          {selected.reqBody && <>
-            <Text style={{ color: '#7ECBA1', fontWeight: '700', fontSize: 11, marginTop: 14, marginBottom: 4 }}>REQUEST BODY</Text>
-            <ScrollView horizontal><Text style={{ color: '#C8E8A9', fontSize: 10, fontFamily: 'monospace', backgroundColor: '#1A3D2E', padding: 8, borderRadius: 6 }}>{JSON.stringify(JSON.parse(selected.reqBody), null, 2)}</Text></ScrollView>
+        <ScrollView style={{ flex: 1 }} contentContainerStyle={{ padding: 16 }}>
+          {/* URL */}
+          <Text style={S.sectionLabel}>URL</Text>
+          <ScrollView horizontal showsHorizontalScrollIndicator={false}>
+            <Text style={S.codeBlock}>{selected.url || `${API_URL}${selected.path}`}</Text>
+          </ScrollView>
+
+          {/* Status line */}
+          <Text style={S.sectionLabel}>STATUS</Text>
+          <Text style={[S.codeBlock, { color: isErr(selected) ? '#F4A89A' : '#C8E8A9' }]}>
+            {selected.status}  ·  {selected.ms}ms  ·  {selected.time}
+          </Text>
+
+          {/* Error */}
+          {selected.error && <>
+            <Text style={S.sectionLabel}>ERROR</Text>
+            <Text style={S.errorBlock}>{selected.error}</Text>
           </>}
-          {selected.resBody && <>
-            <Text style={{ color: '#7ECBA1', fontWeight: '700', fontSize: 11, marginTop: 14, marginBottom: 4 }}>RESPONSE BODY</Text>
-            <ScrollView horizontal><Text style={{ color: '#C8E8A9', fontSize: 10, fontFamily: 'monospace', backgroundColor: '#1A3D2E', padding: 8, borderRadius: 6 }}>{(() => { try { return JSON.stringify(JSON.parse(selected.resBody), null, 2); } catch { return selected.resBody; } })()}</Text></ScrollView>
-          </>}
+
+          {/* Request headers */}
+          <Text style={S.sectionLabel}>REQUEST HEADERS</Text>
+          <ScrollView horizontal showsHorizontalScrollIndicator={false}>
+            <Text style={S.codeBlock}>
+              {selected.reqHeaders
+                ? Object.entries(selected.reqHeaders).map(([k, v]) => `${k}: ${v}`).join('\n')
+                : `Method: ${selected.method}`}
+            </Text>
+          </ScrollView>
+
+          {/* Request body */}
+          <Text style={S.sectionLabel}>REQUEST BODY</Text>
+          <ScrollView horizontal showsHorizontalScrollIndicator={false}>
+            <Text style={S.codeBlock}>
+              {selected.reqBody ? prettyJson(selected.reqBody) : '(none)'}
+            </Text>
+          </ScrollView>
+
+          {/* Response body */}
+          <Text style={S.sectionLabel}>RESPONSE BODY</Text>
+          <ScrollView horizontal showsHorizontalScrollIndicator={false}>
+            <Text style={S.codeBlock}>
+              {selected.resBody ? prettyJson(selected.resBody) : '(none / pending)'}
+            </Text>
+          </ScrollView>
         </ScrollView>
       ) : (
-        <ScrollView style={{ flex: 1 }} contentContainerStyle={{ padding: 12, gap: 6 }}>
-          {logs.length === 0 && <Text style={{ color: '#5A7A6A', textAlign: 'center', marginTop: 40 }}>No requests yet</Text>}
+        <ScrollView style={{ flex: 1 }} contentContainerStyle={{ padding: 12 }}>
+          {logs.length === 0 && <Text style={S.emptyText}>No requests yet</Text>}
           {logs.map((log, i) => (
-            <Pressable key={i} onPress={() => setSelected(log)} style={{ backgroundColor: '#1A3D2E', borderRadius: 8, padding: 10 }}>
-              <View style={{ flexDirection: 'row', justifyContent: 'space-between' }}>
-                <Text style={{ color: log.status >= 400 || log.status === 'ERR' ? '#F4A89A' : '#C8E8A9', fontWeight: '700', fontSize: 11, flex: 1 }} numberOfLines={1}>{log.method} {log.path}</Text>
-                <Text style={{ color: log.status >= 400 || log.status === 'ERR' ? '#F4A89A' : '#7ECBA1', fontSize: 11 }}>{log.status} · {log.ms}ms</Text>
+            <Pressable key={log.id || i} onPress={() => setSelected(log)} style={S.row}>
+              <View style={S.rowTop}>
+                <Text style={[S.rowMethod, { color: isErr(log) ? '#F4A89A' : '#C8E8A9' }]} numberOfLines={1}>
+                  {log.method}  {log.path}
+                </Text>
+                <Text style={[S.rowStatus, { color: isErr(log) ? '#F4A89A' : '#7ECBA1' }]}>
+                  {log.status} · {log.ms}ms
+                </Text>
               </View>
-              <Text style={{ color: '#5A7A6A', fontSize: 10, marginTop: 2 }}>{log.time}</Text>
-              {log.error ? <Text style={{ color: '#F4A89A', fontSize: 10, marginTop: 3 }} numberOfLines={1}>{log.error}</Text> : null}
-              {(log.reqBody || log.resBody) && <Text style={{ color: '#3A6A4A', fontSize: 9, marginTop: 2 }}>Tap to see request/response body</Text>}
+              <Text style={S.rowUrl} numberOfLines={1}>
+                <Text style={{ color: '#3A6A4A' }}>{log.url || `${API_URL}${log.path}`}</Text>
+              </Text>
+              <Text style={S.rowTime}>{log.time}</Text>
+              {log.error && <Text style={S.rowError} numberOfLines={1}>{log.error}</Text>}
+              <Text style={S.rowHint}>Tap to see headers · request · response</Text>
             </Pressable>
           ))}
         </ScrollView>
@@ -774,7 +888,7 @@ function ApiLogPanel({ onClose }) {
   );
 }
 
-function AuthScreen({ auth, setAuth, mode, setMode, onSubmit, busy, toast }) {
+function AuthScreen({ auth, setAuth, mode, setMode, onSubmit, busy, toast, showApiLog, setShowApiLog, apiLogs, errorCount }) {
   return (
     <KeyboardAvoidingView style={styles.authRoot} behavior={Platform.OS === 'ios' ? 'padding' : 'height'}>
       <Toast toast={toast} />
@@ -794,6 +908,19 @@ function AuthScreen({ auth, setAuth, mode, setMode, onSubmit, busy, toast }) {
         </Card>
         <Text style={styles.authFoot}>Your financial information is sensitive. Use a unique password. Qlots is a planning tool, not financial advice.</Text>
       </ScrollView>
+      {NETWORK_LOG_ENABLED && (
+        <Pressable onPress={() => setShowApiLog(true)} style={styles.chuckerBubble}>
+          <Text style={styles.chuckerBubbleText}>🌐</Text>
+          {apiLogs.length > 0 && (
+            <View style={[styles.chuckerBadge, errorCount > 0 && { backgroundColor: '#A6473C' }]}>
+              <Text style={styles.chuckerBadgeText}>{errorCount > 0 ? errorCount : apiLogs.length}</Text>
+            </View>
+          )}
+        </Pressable>
+      )}
+      <Modal visible={showApiLog} animationType="slide" onRequestClose={() => setShowApiLog(false)}>
+        <ApiLogPanel onClose={() => setShowApiLog(false)} />
+      </Modal>
     </KeyboardAvoidingView>
   );
 }
@@ -965,5 +1092,9 @@ const styles = StyleSheet.create({
   modalRoot: { flex: 1, backgroundColor: C.canvas }, modalHeader: { paddingTop: Platform.OS === 'ios' ? 28 : (StatusBar.currentHeight || 24) + 12, paddingHorizontal: 20, paddingBottom: 12, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', backgroundColor: C.canvas }, modalEyebrow: { fontSize: 9, color: C.green, fontWeight: '800', letterSpacing: 1.1 }, modalTitle: { color: C.ink, fontSize: 21, fontWeight: '800', marginTop: 4 }, closeButton: { height: 36, width: 36, borderRadius: 13, backgroundColor: '#E8ECE6', alignItems: 'center', justifyContent: 'center' }, closeText: { color: C.ink, fontSize: 24, lineHeight: 27 }, modalContent: { paddingHorizontal: 20, paddingBottom: 30 }, categoryGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 7 }, modalFoot: { color: C.muted, fontSize: 10, lineHeight: 15, marginTop: 14, textAlign: 'center' }, deletAccountBtn: { alignItems: 'center', paddingVertical: 18 }, deleteAccountText: { color: C.red, fontSize: 12, fontWeight: '600' }, historyRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', padding: 14, marginBottom: 8 }, historyDate: { color: C.muted, fontSize: 12 }, historyRight: { alignItems: 'flex-end' }, historyAmount: { color: C.ink, fontWeight: '700', fontSize: 14 }, historyDelta: { fontSize: 11, fontWeight: '600', marginTop: 2 },
   toast: { position: 'absolute', top: (StatusBar.currentHeight || 24) + 8, left: 16, right: 16, borderRadius: 12, padding: 14, zIndex: 999, elevation: 20 },
   toastText: { color: '#FFF', fontSize: 13, fontWeight: '600', textAlign: 'center' },
+  chuckerBubble: { position: 'absolute', bottom: 90, right: 16, width: 46, height: 46, borderRadius: 23, backgroundColor: '#123D2E', alignItems: 'center', justifyContent: 'center', elevation: 30, zIndex: 1000, shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.35, shadowRadius: 4 },
+  chuckerBubbleText: { fontSize: 20 },
+  chuckerBadge: { position: 'absolute', top: -4, right: -4, minWidth: 18, height: 18, borderRadius: 9, backgroundColor: C.green, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 3 },
+  chuckerBadgeText: { color: '#FFF', fontSize: 9, fontWeight: '800' },
 });
 

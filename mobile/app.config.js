@@ -22,6 +22,6 @@ export default {
       },
     },
     ios: { supportsTablet: true, bundleIdentifier: 'com.qlots.app' },
-    extra: { apiUrl: process.env.EXPO_PUBLIC_API_URL || 'https://qlots.onrender.com' },
+    extra: { apiUrl: process.env.EXPO_PUBLIC_API_URL || 'https://one.qlots.in' },
   },
 };
